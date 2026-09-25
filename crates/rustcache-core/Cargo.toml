@@ -5,3 +5,22 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+dashmap.workspace = true
+hex.workspace = true
+http.workspace = true
+ipnet.workspace = true
+moka.workspace = true
+parking_lot.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tracing.workspace = true
+webpki-roots.workspace = true

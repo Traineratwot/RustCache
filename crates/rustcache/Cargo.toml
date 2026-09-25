@@ -4,4 +4,37 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "rustcache"
+path = "src/main.rs"
+
+[features]
+default = []
+embed-ui = ["dep:rust-embed"]
+
 [dependencies]
+anyhow.workspace = true
+axum.workspace = true
+bytes.workspace = true
+clap.workspace = true
+dashmap.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+notify.workspace = true
+parking_lot.workspace = true
+rust-embed = { version = "8", optional = true }
+rustcache-core = { path = "../rustcache-core" }
+rustls.workspace = true
+rustls-pemfile.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+socket2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+webpki-roots.workspace = true
