@@ -153,6 +153,31 @@ async fn mitm_https_hit_with_trusted_ca() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Regression: absolute-form `GET http://...` on the MITM port must not wrap
+/// the upstream socket in TLS (that produced 502 InvalidContentType on :80).
+#[tokio::test]
+async fn mitm_plain_http_absolute_uri_skips_tls() {
+    install_crypto();
+    let origin_state = OriginState::new("plain-http-body", "max-age=60");
+    let origin = spawn_origin(origin_state.clone()).await;
+    let (engine, dir) = spawn_engine(ExclusionSet::default()).await;
+
+    let ca_dir = dir.join("ca");
+    let ca = generate_ca(&ca_dir).unwrap();
+    let leaves = Arc::new(LeafIssuer::from_ca(&ca).unwrap());
+    let mitm = spawn_mitm(engine.clone(), leaves).await;
+
+    let url = format!("http://127.0.0.1:{}/plain", origin.port());
+    let (status, body) = proxy_get(mitm, &url).await.unwrap();
+    assert_eq!(status, 200, "http:// via MITM port must fetch plain");
+    assert_eq!(body, b"plain-http-body");
+    assert_eq!(origin_state.hits(), 1);
+
+    let snap = engine.metrics().snapshot();
+    assert_eq!(snap.errors, 0, "no 502s, snap={snap:?}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[tokio::test]
 async fn mitm_issues_leaf_matching_host() {
     install_crypto();

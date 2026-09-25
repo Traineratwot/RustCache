@@ -15,7 +15,9 @@ use rustcache_core::http::fetch::parse_url;
 use rustcache_core::stats::ring::ReqRecord;
 
 use crate::engine::{upstream_tls_connector, CacheEngine, Lookup, SharedEngine};
-use crate::listeners::http_proxy::{read_http_request, write_response_to, HttpRequest};
+use crate::listeners::http_proxy::{
+    cache_headers, entry_age_secs, read_http_request, write_response_to, HttpRequest,
+};
 
 pub struct MitmState {
     pub engine: SharedEngine,
@@ -207,14 +209,16 @@ async fn handle_mitm_request<W: AsyncWriteExt + Unpin + tokio::io::AsyncRead>(
             .await
         {
             Ok(r) => {
-                write_response_to(stream, r.status, &r.headers, &r.body).await?;
+                let headers = cache_headers(&r.headers, "BYPASS", None);
+                write_response_to(stream, r.status, &headers, &r.body).await?;
                 status = r.status;
                 resp_len = r.body.len() as u64;
                 engine.metrics().add_served(resp_len);
             }
             Err(e) => {
                 engine.metrics().add_error();
-                write_response_to(stream, 502, &[], e.to_string().as_bytes()).await?;
+                let headers = cache_headers(&[], "ERROR", None);
+                write_response_to(stream, 502, &headers, e.to_string().as_bytes()).await?;
                 status = 502;
                 resp_len = 0;
             }
@@ -230,7 +234,12 @@ async fn handle_mitm_request<W: AsyncWriteExt + Unpin + tokio::io::AsyncRead>(
                 } else {
                     &entry.body
                 };
-                write_response_to(stream, entry.meta.status, &entry.meta.headers, body).await?;
+                let headers = cache_headers(
+                    &entry.meta.headers,
+                    "HIT",
+                    Some(entry_age_secs(entry.meta.stored_at)),
+                );
+                write_response_to(stream, entry.meta.status, &headers, body).await?;
                 status = entry.meta.status;
                 resp_len = body.len() as u64;
                 outcome = "HIT";
@@ -254,20 +263,20 @@ async fn handle_mitm_request<W: AsyncWriteExt + Unpin + tokio::io::AsyncRead>(
                         } else {
                             &new_entry.body
                         };
-                        write_response_to(
-                            stream,
-                            new_entry.meta.status,
+                        let headers = cache_headers(
                             &new_entry.meta.headers,
-                            body,
-                        )
-                        .await?;
+                            outcome,
+                            Some(entry_age_secs(new_entry.meta.stored_at)),
+                        );
+                        write_response_to(stream, new_entry.meta.status, &headers, body).await?;
                         status = new_entry.meta.status;
                         resp_len = body.len() as u64;
                         engine.metrics().add_served(resp_len);
                     }
                     Err(e) => {
                         engine.metrics().add_error();
-                        write_response_to(stream, 502, &[], e.to_string().as_bytes()).await?;
+                        let headers = cache_headers(&[], "ERROR", None);
+                        write_response_to(stream, 502, &headers, e.to_string().as_bytes()).await?;
                         status = 502;
                         resp_len = 0;
                         outcome = "ERROR";
@@ -286,8 +295,12 @@ async fn handle_mitm_request<W: AsyncWriteExt + Unpin + tokio::io::AsyncRead>(
                         } else {
                             &entry.body
                         };
-                        write_response_to(stream, entry.meta.status, &entry.meta.headers, body)
-                            .await?;
+                        let headers = cache_headers(
+                            &entry.meta.headers,
+                            "MISS",
+                            Some(entry_age_secs(entry.meta.stored_at)),
+                        );
+                        write_response_to(stream, entry.meta.status, &headers, body).await?;
                         status = entry.meta.status;
                         resp_len = body.len() as u64;
                         outcome = "MISS";
@@ -295,7 +308,8 @@ async fn handle_mitm_request<W: AsyncWriteExt + Unpin + tokio::io::AsyncRead>(
                     }
                     Err(e) => {
                         engine.metrics().add_error();
-                        write_response_to(stream, 502, &[], e.to_string().as_bytes()).await?;
+                        let headers = cache_headers(&[], "ERROR", None);
+                        write_response_to(stream, 502, &headers, e.to_string().as_bytes()).await?;
                         status = 502;
                         resp_len = 0;
                         outcome = "ERROR";

@@ -279,25 +279,55 @@ pub async fn spawn_socks5(engine: SharedEngine) -> SocketAddr {
 
 /// Send one absolute-form HTTP request through the proxy; return status + body.
 pub async fn proxy_get(proxy: SocketAddr, url: &str) -> std::io::Result<(u16, Vec<u8>)> {
+    let (status, _, body) = proxy_get_full(proxy, url).await?;
+    Ok((status, body))
+}
+
+/// Send one absolute-form HTTP request; return status + response headers + body.
+pub async fn proxy_get_full(
+    proxy: SocketAddr,
+    url: &str,
+) -> std::io::Result<(u16, Vec<(String, String)>, Vec<u8>)> {
     let mut sock = TcpStream::connect(proxy).await?;
     let req = format!("GET {url} HTTP/1.1\r\nHost: origin\r\nConnection: close\r\n\r\n");
     sock.write_all(req.as_bytes()).await?;
     sock.flush().await?;
     let mut buf = Vec::new();
     sock.read_to_end(&mut buf).await?;
-    parse_response(&buf)
+    parse_response_full(&buf)
 }
 
 pub fn parse_response(buf: &[u8]) -> std::io::Result<(u16, Vec<u8>)> {
+    let (status, _, body) = parse_response_full(buf)?;
+    Ok((status, body))
+}
+
+pub fn parse_response_full(buf: &[u8]) -> std::io::Result<(u16, Vec<(String, String)>, Vec<u8>)> {
     let pos = buf
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "no header end"))?;
     let head = String::from_utf8_lossy(&buf[..pos]);
-    let status = head
+    let mut lines = head.split("\r\n");
+    let start = lines.next().unwrap_or_default();
+    let status = start
         .split_whitespace()
         .nth(1)
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "bad status"))?;
-    Ok((status, buf[pos + 4..].to_vec()))
+    let mut headers = Vec::new();
+    for line in lines {
+        if let Some((k, v)) = line.split_once(':') {
+            headers.push((k.trim().to_string(), v.trim().to_string()));
+        }
+    }
+    Ok((status, headers, buf[pos + 4..].to_vec()))
+}
+
+/// Case-insensitive header lookup.
+pub fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.as_str())
 }

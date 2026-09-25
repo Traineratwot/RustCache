@@ -252,3 +252,56 @@ async fn disk_fallback_hit_after_mem_invalidated() {
     assert_eq!(origin_state.hits(), 1, "disk entry serves after mem miss");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test]
+async fn response_headers_report_version_and_cache_status() {
+    install_crypto();
+    let origin_state = OriginState::new("hdr", "max-age=60");
+    let origin = spawn_origin(origin_state.clone()).await;
+    let (engine, dir) = spawn_engine(ExclusionSet::default()).await;
+    let proxy = spawn_http_proxy(engine.clone()).await;
+
+    let url = format!("http://127.0.0.1:{}/hdr", origin.port());
+
+    let (s1, h1, b1) = proxy_get_full(proxy, &url).await.unwrap();
+    assert_eq!(s1, 200);
+    assert_eq!(b1, b"hdr");
+    assert_eq!(
+        header(&h1, "X-RustCache-Version"),
+        Some(rustcache_core::version())
+    );
+    assert_eq!(header(&h1, "X-RustCache-Status"), Some("MISS"));
+    assert!(header(&h1, "X-RustCache-Age").is_some());
+
+    let (s2, h2, b2) = proxy_get_full(proxy, &url).await.unwrap();
+    assert_eq!(s2, 200);
+    assert_eq!(b2, b"hdr");
+    assert_eq!(
+        header(&h2, "X-RustCache-Version"),
+        Some(rustcache_core::version())
+    );
+    assert_eq!(header(&h2, "X-RustCache-Status"), Some("HIT"));
+    assert!(header(&h2, "X-RustCache-Age").is_some());
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn bypass_response_reports_bypass_status() {
+    install_crypto();
+    let origin_state = OriginState::new("byp", "max-age=60");
+    let origin = spawn_origin(origin_state.clone()).await;
+    let (engine, dir) = spawn_engine(ExclusionSet::from_specs(&["127.0.0.1".into()], &[])).await;
+    let proxy = spawn_http_proxy(engine.clone()).await;
+
+    let url = format!("http://127.0.0.1:{}/byp", origin.port());
+    let (s, h, _) = proxy_get_full(proxy, &url).await.unwrap();
+    assert_eq!(s, 200);
+    assert_eq!(header(&h, "X-RustCache-Status"), Some("BYPASS"));
+    assert_eq!(
+        header(&h, "X-RustCache-Version"),
+        Some(rustcache_core::version())
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -201,7 +201,8 @@ async fn handle_absolute(
             .await;
         match resp {
             Ok(r) => {
-                write_response(stream, r.status, &r.headers, &r.body).await?;
+                let headers = cache_headers(&r.headers, "BYPASS", None);
+                write_response(stream, r.status, &headers, &r.body).await?;
                 engine.metrics().add_served(r.body.len() as u64);
                 engine.record(ReqRecord {
                     ts: rustcache_core::cache::meta::now_ms(),
@@ -241,7 +242,8 @@ async fn handle_absolute(
             .await;
         match resp {
             Ok(r) => {
-                write_response(stream, r.status, &r.headers, &r.body).await?;
+                let headers = cache_headers(&r.headers, "BYPASS", None);
+                write_response(stream, r.status, &headers, &r.body).await?;
                 engine.metrics().add_served(r.body.len() as u64);
                 engine.record(ReqRecord {
                     ts: rustcache_core::cache::meta::now_ms(),
@@ -285,7 +287,12 @@ async fn serve_cached(
             } else {
                 &entry.body
             };
-            write_response(stream, entry.meta.status, &entry.meta.headers, body).await?;
+            let headers = cache_headers(
+                &entry.meta.headers,
+                "HIT",
+                Some(entry_age_secs(entry.meta.stored_at)),
+            );
+            write_response(stream, entry.meta.status, &headers, body).await?;
             engine.metrics().add_served(body.len() as u64);
             engine.record(ReqRecord {
                 ts: rustcache_core::cache::meta::now_ms(),
@@ -300,7 +307,14 @@ async fn serve_cached(
             Ok(connection_keep_alive(req))
         }
         Lookup::Revalidate { entry } => match engine
-            .fetch_and_store(method, url, &req.headers, None, None, Some(&entry))
+            .fetch_and_store(
+                method,
+                url,
+                &req.headers,
+                None,
+                Some(crate::engine::upstream_tls_connector()),
+                Some(&entry),
+            )
             .await
         {
             Ok(new_entry) => {
@@ -320,8 +334,12 @@ async fn serve_cached(
                 } else {
                     &new_entry.body
                 };
-                write_response(stream, new_entry.meta.status, &new_entry.meta.headers, body)
-                    .await?;
+                let headers = cache_headers(
+                    &new_entry.meta.headers,
+                    outcome,
+                    Some(entry_age_secs(new_entry.meta.stored_at)),
+                );
+                write_response(stream, new_entry.meta.status, &headers, body).await?;
                 engine.metrics().add_served(body.len() as u64);
                 engine.record(ReqRecord {
                     ts: rustcache_core::cache::meta::now_ms(),
@@ -342,7 +360,14 @@ async fn serve_cached(
             }
         },
         Lookup::Miss => match engine
-            .fetch_and_store(method, url, &req.headers, None, None, None)
+            .fetch_and_store(
+                method,
+                url,
+                &req.headers,
+                None,
+                Some(crate::engine::upstream_tls_connector()),
+                None,
+            )
             .await
         {
             Ok(entry) => {
@@ -352,7 +377,12 @@ async fn serve_cached(
                 } else {
                     &entry.body
                 };
-                write_response(stream, entry.meta.status, &entry.meta.headers, body).await?;
+                let headers = cache_headers(
+                    &entry.meta.headers,
+                    "MISS",
+                    Some(entry_age_secs(entry.meta.stored_at)),
+                );
+                write_response(stream, entry.meta.status, &headers, body).await?;
                 engine.metrics().add_served(body.len() as u64);
                 engine.record(ReqRecord {
                     ts: rustcache_core::cache::meta::now_ms(),
@@ -384,6 +414,40 @@ fn connection_keep_alive(req: &HttpRequest) -> bool {
     // HTTP/1.1 default keep-alive; we close to keep the cache path simple and
     // avoid leftover body frames after origin `Connection: close`.
     false
+}
+
+/// Diagnostic headers RustCache adds to every response it writes to a client.
+///
+/// - `X-RustCache-Version` — build version
+/// - `X-RustCache-Status` — cache outcome (`HIT` / `MISS` / `HIT_REVALIDATED` /
+///   `REVALIDATED` / `BYPASS` / `ERROR`)
+/// - `X-RustCache-Age` — seconds since the body was stored (cached paths only)
+///
+/// Origin-supplied `X-RustCache-*` headers are stripped so they cannot spoof ours.
+pub fn cache_headers(
+    headers: &[(String, String)],
+    outcome: &str,
+    age_secs: Option<u64>,
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = headers
+        .iter()
+        .filter(|(k, _)| !k.to_ascii_lowercase().starts_with("x-rustcache"))
+        .cloned()
+        .collect();
+    out.push((
+        "X-RustCache-Version".into(),
+        rustcache_core::version().into(),
+    ));
+    out.push(("X-RustCache-Status".into(), outcome.into()));
+    if let Some(age) = age_secs {
+        out.push(("X-RustCache-Age".into(), age.to_string()));
+    }
+    out
+}
+
+/// Seconds elapsed since the entry was stored.
+pub fn entry_age_secs(stored_at_ms: u64) -> u64 {
+    rustcache_core::cache::meta::now_ms().saturating_sub(stored_at_ms) / 1000
 }
 
 pub async fn write_response(
@@ -429,7 +493,8 @@ pub async fn write_response(
 }
 
 async fn write_error(stream: &mut TcpStream, status: u16, msg: &str) -> anyhow::Result<()> {
-    write_response(stream, status, &[], msg.as_bytes()).await
+    let headers = cache_headers(&[], "ERROR", None);
+    write_response(stream, status, &headers, msg.as_bytes()).await
 }
 
 fn reason_phrase(status: u16) -> &'static str {
@@ -483,4 +548,53 @@ pub async fn write_response_to<W: AsyncWriteExt + Unpin>(
     }
     stream.flush().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hv<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+        headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn cache_headers_injects_version_status_age() {
+        let origin = vec![
+            ("Content-Type".into(), "text/plain".into()),
+            ("X-RustCache-Status".into(), "SPOOFED".into()),
+        ];
+        let h = cache_headers(&origin, "HIT", Some(12));
+        assert_eq!(
+            hv(&h, "X-RustCache-Version"),
+            Some(rustcache_core::version())
+        );
+        assert_eq!(hv(&h, "X-RustCache-Status"), Some("HIT"));
+        assert_eq!(hv(&h, "X-RustCache-Age"), Some("12"));
+        assert_eq!(hv(&h, "Content-Type"), Some("text/plain"));
+        // origin-supplied spoof is stripped
+        assert_eq!(
+            h.iter()
+                .filter(|(k, _)| k.eq_ignore_ascii_case("X-RustCache-Status"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn cache_headers_omits_age_when_none() {
+        let h = cache_headers(&[], "BYPASS", None);
+        assert_eq!(hv(&h, "X-RustCache-Status"), Some("BYPASS"));
+        assert_eq!(hv(&h, "X-RustCache-Age"), None);
+    }
+
+    #[test]
+    fn entry_age_secs_floor() {
+        let now = rustcache_core::cache::meta::now_ms();
+        assert_eq!(entry_age_secs(now), 0);
+        assert_eq!(entry_age_secs(now.saturating_sub(2500)), 2);
+    }
 }

@@ -33,7 +33,8 @@ pub struct OriginResponse {
 
 impl OriginFetcher {
     /// Fetch `url` with `method` and optional request headers + body.
-    /// When `tls` is true, the connection is wrapped with `tls_connector` (SNI = host).
+    /// `tls` is used only when `url` scheme is `https` (SNI = host); `http://` stays plaintext
+    /// even if a connector is supplied.
     pub async fn fetch(
         &self,
         method: &str,
@@ -115,11 +116,17 @@ impl OriginFetcher {
         head.push_str("\r\n");
         let payload = head.into_bytes();
 
-        if let Some(tls) = tls {
-            let connector = tls;
+        // TLS only for https:// — a connector present for an http:// URL must not
+        // wrap the socket (that yields InvalidContentType against port 80/8080).
+        if parsed.scheme == "https" {
+            let Some(tls) = tls else {
+                return Err(crate::Error::Tls(format!(
+                    "https fetch requires a TLS connector: {url}"
+                )));
+            };
             let domain = rustls::pki_types::ServerName::try_from(parsed.host.clone())
                 .map_err(|_| crate::Error::Tls(format!("invalid SNI: {}", parsed.host)))?;
-            let mut tls_stream = connector
+            let mut tls_stream = tls
                 .connect(domain, stream)
                 .await
                 .map_err(|e| crate::Error::Tls(e.to_string()))?;
