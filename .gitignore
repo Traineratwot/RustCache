@@ -4,6 +4,6 @@ web/node_modules
 web/dist
 .env
 *.key
-ca/
-cache/
+/ca/
+/cache/
 config.toml
