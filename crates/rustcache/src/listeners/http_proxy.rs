@@ -275,8 +275,13 @@ async fn serve_cached(
     match lookup {
         Lookup::Hit(entry) => {
             engine.metrics().add_hit(entry.body.len() as u64);
-            write_response(stream, entry.meta.status, &entry.meta.headers, &entry.body).await?;
-            engine.metrics().add_served(entry.body.len() as u64);
+            let body: &[u8] = if method.eq_ignore_ascii_case("HEAD") {
+                &[]
+            } else {
+                &entry.body
+            };
+            write_response(stream, entry.meta.status, &entry.meta.headers, body).await?;
+            engine.metrics().add_served(body.len() as u64);
             engine.record(ReqRecord {
                 ts: rustcache_core::cache::meta::now_ms(),
                 method: method.into(),
@@ -305,14 +310,14 @@ async fn serve_cached(
                 } else {
                     engine.metrics().add_miss();
                 }
-                write_response(
-                    stream,
-                    new_entry.meta.status,
-                    &new_entry.meta.headers,
-                    &new_entry.body,
-                )
-                .await?;
-                engine.metrics().add_served(new_entry.body.len() as u64);
+                let body: &[u8] = if method.eq_ignore_ascii_case("HEAD") {
+                    &[]
+                } else {
+                    &new_entry.body
+                };
+                write_response(stream, new_entry.meta.status, &new_entry.meta.headers, body)
+                    .await?;
+                engine.metrics().add_served(body.len() as u64);
                 engine.record(ReqRecord {
                     ts: rustcache_core::cache::meta::now_ms(),
                     method: method.into(),
@@ -337,8 +342,13 @@ async fn serve_cached(
         {
             Ok(entry) => {
                 engine.metrics().add_miss();
-                write_response(stream, entry.meta.status, &entry.meta.headers, &entry.body).await?;
-                engine.metrics().add_served(entry.body.len() as u64);
+                let body: &[u8] = if method.eq_ignore_ascii_case("HEAD") {
+                    &[]
+                } else {
+                    &entry.body
+                };
+                write_response(stream, entry.meta.status, &entry.meta.headers, body).await?;
+                engine.metrics().add_served(body.len() as u64);
                 engine.record(ReqRecord {
                     ts: rustcache_core::cache::meta::now_ms(),
                     method: method.into(),
@@ -347,7 +357,7 @@ async fn serve_cached(
                     status: entry.meta.status,
                     outcome: "MISS".into(),
                     duration_ms: started.elapsed().as_millis() as u64,
-                    resp_bytes: entry.body.len() as u64,
+                    resp_bytes: body.len() as u64,
                 });
                 Ok(connection_keep_alive(req))
             }

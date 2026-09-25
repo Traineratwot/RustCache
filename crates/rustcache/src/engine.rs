@@ -179,10 +179,9 @@ impl CacheEngine {
         }
 
         let policy = CachePolicy::from_headers(resp.status, &resp.headers);
-        let decision = policy.decide(
-            (method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD"))
-                && !has_auth,
-        );
+        // Only GET populates the cache. HEAD may read a GET entry but must not
+        // store its empty body (that would poison later GETs).
+        let decision = policy.decide(method.eq_ignore_ascii_case("GET") && !has_auth);
         let headers = resp.headers.clone();
         let meta = policy.to_meta(&key, url, resp.status, headers);
         let entry = CachedEntry {

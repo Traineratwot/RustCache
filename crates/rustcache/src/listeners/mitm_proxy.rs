@@ -211,10 +211,14 @@ async fn handle_mitm_request<W: AsyncWriteExt + Unpin + tokio::io::AsyncRead>(
         match lookup {
             Lookup::Hit(entry) => {
                 engine.metrics().add_hit(entry.body.len() as u64);
-                write_response_to(stream, entry.meta.status, &entry.meta.headers, &entry.body)
-                    .await?;
+                let body: &[u8] = if method.eq_ignore_ascii_case("HEAD") {
+                    &[]
+                } else {
+                    &entry.body
+                };
+                write_response_to(stream, entry.meta.status, &entry.meta.headers, body).await?;
                 status = entry.meta.status;
-                resp_len = entry.body.len() as u64;
+                resp_len = body.len() as u64;
                 outcome = "HIT";
                 engine.metrics().add_served(resp_len);
             }
@@ -231,15 +235,20 @@ async fn handle_mitm_request<W: AsyncWriteExt + Unpin + tokio::io::AsyncRead>(
                             engine.metrics().add_miss();
                             outcome = "REVALIDATED";
                         }
+                        let body: &[u8] = if method.eq_ignore_ascii_case("HEAD") {
+                            &[]
+                        } else {
+                            &new_entry.body
+                        };
                         write_response_to(
                             stream,
                             new_entry.meta.status,
                             &new_entry.meta.headers,
-                            &new_entry.body,
+                            body,
                         )
                         .await?;
                         status = new_entry.meta.status;
-                        resp_len = new_entry.body.len() as u64;
+                        resp_len = body.len() as u64;
                         engine.metrics().add_served(resp_len);
                     }
                     Err(e) => {
@@ -258,15 +267,15 @@ async fn handle_mitm_request<W: AsyncWriteExt + Unpin + tokio::io::AsyncRead>(
                 {
                     Ok(entry) => {
                         engine.metrics().add_miss();
-                        write_response_to(
-                            stream,
-                            entry.meta.status,
-                            &entry.meta.headers,
-                            &entry.body,
-                        )
-                        .await?;
+                        let body: &[u8] = if method.eq_ignore_ascii_case("HEAD") {
+                            &[]
+                        } else {
+                            &entry.body
+                        };
+                        write_response_to(stream, entry.meta.status, &entry.meta.headers, body)
+                            .await?;
                         status = entry.meta.status;
-                        resp_len = entry.body.len() as u64;
+                        resp_len = body.len() as u64;
                         outcome = "MISS";
                         engine.metrics().add_served(resp_len);
                     }
