@@ -86,4 +86,49 @@ mod tests {
         assert_eq!(issuer.cached_hosts(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn leaf_parses_and_embeds_san_host() {
+        let dir = std::env::temp_dir().join(format!("rc-leaf-san-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ca = generate_ca(&dir).unwrap();
+        let issuer = LeafIssuer::from_ca(&ca).unwrap();
+        let host = "shop.example.org";
+        let leaf = issuer.issue(host).unwrap();
+
+        // parse-back PEM → DER
+        let mut certs = rustls_pemfile::certs(&mut leaf.cert_pem.as_bytes())
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(certs.len(), 1);
+        let der = certs.pop().unwrap();
+        // DNS name / CN appears in the DER-encoded SAN / subject
+        assert!(
+            der.as_ref()
+                .windows(host.len())
+                .any(|w| w == host.as_bytes()),
+            "host must appear in cert DER (SAN/CN)"
+        );
+
+        // key PEM parses
+        let keys = rustls_pemfile::private_key(&mut leaf.key_pem.as_bytes()).unwrap();
+        assert!(keys.is_some());
+
+        // leaf is not the CA cert
+        assert_ne!(leaf.cert_pem, ca.cert_pem);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn distinct_hosts_get_distinct_certs() {
+        let dir = std::env::temp_dir().join(format!("rc-leaf-dist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ca = generate_ca(&dir).unwrap();
+        let issuer = LeafIssuer::from_ca(&ca).unwrap();
+        let a = issuer.issue("a.example.com").unwrap();
+        let b = issuer.issue("b.example.com").unwrap();
+        assert_ne!(a.cert_pem, b.cert_pem);
+        assert_eq!(issuer.cached_hosts(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

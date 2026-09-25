@@ -1,10 +1,5 @@
 //! RustCache CLI: run | gen-ca | export-ca | purge
 
-mod api;
-mod config;
-mod engine;
-mod listeners;
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -17,10 +12,11 @@ use rustcache_core::certs::ca::{export_pem, generate_ca, load_ca};
 use rustcache_core::certs::leaf::LeafIssuer;
 use rustcache_core::excl::ExclusionSet;
 
-use crate::api::{router, ApiState};
-use crate::config::watch::LiveConfig;
-use crate::config::Config;
-use crate::engine::CacheEngine;
+use rustcache::api::{router, ApiState};
+use rustcache::config::watch::LiveConfig;
+use rustcache::config::Config;
+use rustcache::engine::CacheEngine;
+use rustcache::listeners;
 
 #[derive(Parser, Debug)]
 #[command(name = "rustcache", version, about = "Caching proxy server")]
@@ -131,7 +127,7 @@ async fn run(config_path: PathBuf) -> anyhow::Result<()> {
     let live = LiveConfig::new(cfg.clone());
     let (cfg_tx, mut cfg_rx) = tokio::sync::watch::channel::<Option<Config>>(None);
     let _watcher = if config_path.exists() {
-        match config::watch::spawn_watcher(&config_path, cfg_tx) {
+        match rustcache::config::watch::spawn_watcher(&config_path, cfg_tx) {
             Ok(w) => Some(w),
             Err(e) => {
                 tracing::warn!(error = %e, "config watcher not started");

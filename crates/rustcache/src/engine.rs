@@ -217,6 +217,13 @@ impl CacheEngine {
         Ok(n)
     }
 
+    /// Drop a single URL from mem + disk. Returns true if a disk entry was removed.
+    pub async fn purge_key(&self, url: &str) -> anyhow::Result<bool> {
+        let key = cache_key(url);
+        self.mem.invalidate(key.as_str()).await;
+        Ok(self.disk.remove(key.as_str()).await?)
+    }
+
     pub async fn cache_size(&self) -> anyhow::Result<(u64, u64)> {
         Ok(self.disk.usage().await?)
     }

@@ -296,4 +296,54 @@ mod tests {
         assert!(disk.load_body(&key).await.unwrap().is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[tokio::test]
+    async fn rejects_non_hex_key() {
+        let dir = std::env::temp_dir().join(format!("rc-disk-hex-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let disk = DiskCache::open(&dir).unwrap();
+        let mut meta = meta_for("http://example.com/x");
+        meta.key = "../escape".into();
+        assert!(disk.store(meta, b"nope").await.is_err());
+        assert!(disk.load_meta("../escape").await.unwrap().is_none());
+        assert!(disk.load_body("../escape").await.unwrap().is_none());
+        assert!(!disk.remove("../escape").await.unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn purge_all_clears_entries() {
+        let dir = std::env::temp_dir().join(format!("rc-disk-purge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let disk = DiskCache::open(&dir).unwrap();
+        for i in 0..3 {
+            let url = format!("http://example.com/p{i}");
+            disk.store(meta_for(&url), b"body").await.unwrap();
+        }
+        let (bytes, n) = disk.usage().await.unwrap();
+        assert_eq!(n, 3);
+        assert_eq!(bytes, 12);
+        let purged = disk.purge_all().await.unwrap();
+        assert!(purged >= 6); // 3 meta + 3 body
+        let (bytes, n) = disk.usage().await.unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(bytes, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn touch_updates_last_access() {
+        let dir = std::env::temp_dir().join(format!("rc-disk-touch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let disk = DiskCache::open(&dir).unwrap();
+        let url = "http://example.com/t";
+        let key = cache_key(url).as_str().to_string();
+        disk.store(meta_for(url), b"x").await.unwrap();
+        let before = disk.load_meta(&key).await.unwrap().unwrap().last_access;
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        disk.touch(&key).await.unwrap();
+        let after = disk.load_meta(&key).await.unwrap().unwrap().last_access;
+        assert!(after >= before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

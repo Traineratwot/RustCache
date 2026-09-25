@@ -30,6 +30,11 @@ pub async fn serve(addr: std::net::SocketAddr, engine: SharedEngine) -> anyhow::
     }
 }
 
+/// Handle a single accepted connection (exported for integration tests).
+pub async fn serve_connection(stream: TcpStream, engine: SharedEngine) -> anyhow::Result<()> {
+    handle(stream, engine).await
+}
+
 async fn handle(mut client: TcpStream, engine: SharedEngine) -> anyhow::Result<()> {
     let started = Instant::now();
     // greeting

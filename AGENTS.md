@@ -8,7 +8,7 @@ Plans: `docs/plans/`. Delivery reports: `docs/compose/spec/`.
 - `crates/rustcache-core` — lib: `cache/` (key/disk/mem/meta/evict/coalesce), `certs/` (ca/leaf), `http/` (cache_policy/fetch), `stats/`, `excl/`
 - `crates/rustcache` — bin: CLI `main.rs`, shared `engine.rs` (`CacheEngine`), `listeners/` (http_proxy, mitm_proxy, socks5), `api/`, `config/`
 - `config.example.toml` → copy to `config.toml` (gitignored). Missing config falls back to built-in defaults (`~/.local/share/rustcache/{ca,cache}`).
-- Not built yet (plans 04/05): `web/`, `scripts/smoke.sh`, integration `tests/`. The `embed-ui` feature is declared in Cargo.toml but `ui_embed.rs` does not exist — don't invent it.
+- `web/` (plan 05). `scripts/smoke.sh` and integration `tests/` live under `crates/rustcache/tests/`. The `embed-ui` feature is declared in Cargo.toml but `ui_embed.rs` does not exist — don't invent it.
 
 ## Commands
 

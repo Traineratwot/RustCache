@@ -143,4 +143,27 @@ mod tests {
         let (a, c) = k.fanout();
         assert_eq!(format!("{a}{c}"), &k.as_str()[..4]);
     }
+
+    #[test]
+    fn query_only_path_normalized() {
+        assert_eq!(
+            canonical_url("http://example.com?a=1"),
+            "http://example.com/?a=1"
+        );
+    }
+
+    #[test]
+    fn non_default_port_preserved() {
+        assert_eq!(
+            canonical_url("http://example.com:8080/x"),
+            "http://example.com:8080/x"
+        );
+    }
+
+    #[test]
+    fn different_urls_different_keys() {
+        let a = cache_key("http://example.com/a");
+        let b = cache_key("http://example.com/b");
+        assert_ne!(a.as_str(), b.as_str());
+    }
 }

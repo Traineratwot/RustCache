@@ -39,3 +39,37 @@ pub fn now_ms() -> u64 {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meta(cacheable: bool, expires_at: Option<u64>) -> CacheMeta {
+        CacheMeta {
+            key: "k".into(),
+            url: "u".into(),
+            status: 200,
+            headers: vec![],
+            stored_at: 1000,
+            last_access: 1000,
+            body_len: 0,
+            etag: None,
+            last_modified: None,
+            expires_at,
+            cacheable,
+        }
+    }
+
+    #[test]
+    fn fresh_when_cacheable_and_before_expiry() {
+        assert!(meta(true, Some(2000)).is_fresh(1500));
+        assert!(!meta(true, Some(2000)).is_fresh(2000));
+        assert!(!meta(true, Some(2000)).is_fresh(2500));
+    }
+
+    #[test]
+    fn stale_without_expiry_or_when_not_cacheable() {
+        assert!(!meta(true, None).is_fresh(1500));
+        assert!(!meta(false, Some(2000)).is_fresh(1500));
+    }
+}

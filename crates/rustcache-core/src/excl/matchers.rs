@@ -189,4 +189,23 @@ mod tests {
         assert!(s.is_excluded("host", Some("10.9.9.9".parse().unwrap())));
         assert!(!s.is_excluded("8.8.8.8", None));
     }
+
+    #[test]
+    fn negative_cases_do_not_match() {
+        let s = ExclusionSet::from_specs(
+            &["bank.example".into(), "*.local".into()],
+            &["192.168.0.0/16".into()],
+        );
+        assert!(!s.is_excluded("notbank.example", None));
+        assert!(!s.is_excluded("evil-local", None));
+        assert!(!s.is_excluded("10.0.0.1", None));
+        assert!(!s.is_excluded_url("http://example.org/"));
+    }
+
+    #[test]
+    fn is_excluded_url_extracts_host_and_port() {
+        let s = ExclusionSet::from_specs(&["bank.example".into()], &[]);
+        assert!(s.is_excluded_url("https://bank.example:8443/login"));
+        assert!(!s.is_excluded_url("https://other.example/"));
+    }
 }

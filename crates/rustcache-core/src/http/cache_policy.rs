@@ -283,4 +283,64 @@ mod tests {
         let p = CachePolicy::from_headers(200, &h(&[("cache-control", "max-age=60")]));
         assert_eq!(p.decide(false), CacheDecision::NoStore);
     }
+
+    #[test]
+    fn expires_header_makes_fresh() {
+        // 2100-01-01 — far future IMF-fixdate
+        let p = CachePolicy::from_headers(200, &h(&[("expires", "Fri, 01 Jan 2100 00:00:00 GMT")]));
+        assert_eq!(p.decide(true), CacheDecision::StoreAndCache);
+        assert!(p.ttl().is_some());
+        assert!(p.ttl().unwrap().as_secs() > 0);
+    }
+
+    #[test]
+    fn expired_expires_header_is_stale() {
+        let p = CachePolicy::from_headers(200, &h(&[("expires", "Thu, 01 Jan 1970 00:00:00 GMT")]));
+        assert_eq!(p.expires_at, Some(0));
+        assert_eq!(p.ttl().unwrap().as_secs(), 0);
+    }
+
+    #[test]
+    fn vary_star_is_ignored() {
+        let p =
+            CachePolicy::from_headers(200, &h(&[("vary", "*"), ("cache-control", "max-age=60")]));
+        assert!(p.vary.is_none());
+    }
+
+    #[test]
+    fn vary_header_captured_lowercase() {
+        let p = CachePolicy::from_headers(
+            200,
+            &h(&[
+                ("vary", "Accept-Encoding, User-Agent"),
+                ("cache-control", "max-age=60"),
+            ]),
+        );
+        assert_eq!(p.vary.as_deref(), Some("accept-encoding, user-agent"));
+    }
+
+    #[test]
+    fn s_maxage_overrides_max_age() {
+        let p =
+            CachePolicy::from_headers(200, &h(&[("cache-control", "max-age=60, s-maxage=120")]));
+        assert_eq!(p.s_maxage, Some(120));
+        let ttl = p.ttl().unwrap().as_secs();
+        assert!(ttl > 60 && ttl <= 120);
+    }
+
+    #[test]
+    fn must_revalidate_stores_but_revalidates() {
+        let p =
+            CachePolicy::from_headers(200, &h(&[("cache-control", "max-age=60, must-revalidate")]));
+        assert!(p.must_revalidate);
+        assert_eq!(p.decide(true), CacheDecision::StoreButRevalidate);
+    }
+
+    #[test]
+    fn immutable_extends_freshness() {
+        let p = CachePolicy::from_headers(200, &h(&[("cache-control", "immutable")]));
+        assert!(p.immutable);
+        assert_eq!(p.decide(true), CacheDecision::StoreAndCache);
+        assert!(p.ttl().unwrap().as_secs() > 3600);
+    }
 }

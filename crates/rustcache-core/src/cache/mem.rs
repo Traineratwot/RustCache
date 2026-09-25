@@ -87,4 +87,24 @@ mod tests {
         mem.invalidate("k").await;
         assert!(mem.get("k").await.is_none());
     }
+
+    #[tokio::test]
+    async fn weigher_evicts_under_capacity() {
+        // capacity is in weighted body-bytes; insert more than max
+        let mem = MemCache::new(10);
+        mem.insert("a", entry(&vec![0u8; 8]), None).await;
+        mem.insert("b", entry(&vec![0u8; 8]), None).await;
+        mem.sync().await.unwrap();
+        assert!(mem.entry_count() <= 1);
+    }
+
+    #[tokio::test]
+    async fn invalidate_all_clears() {
+        let mem = MemCache::new(1024);
+        mem.insert("a", entry(b"1"), None).await;
+        mem.insert("b", entry(b"2"), None).await;
+        mem.invalidate_all().await;
+        mem.sync().await.unwrap();
+        assert_eq!(mem.entry_count(), 0);
+    }
 }

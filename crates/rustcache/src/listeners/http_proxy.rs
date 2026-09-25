@@ -26,6 +26,11 @@ pub async fn serve(addr: std::net::SocketAddr, engine: SharedEngine) -> anyhow::
     }
 }
 
+/// Handle a single accepted connection (exported for integration tests).
+pub async fn serve_connection(stream: TcpStream, engine: SharedEngine) -> anyhow::Result<()> {
+    handle_conn(stream, engine).await
+}
+
 async fn handle_conn(mut stream: TcpStream, engine: SharedEngine) -> anyhow::Result<()> {
     let _ = stream.set_nodelay(true);
     loop {

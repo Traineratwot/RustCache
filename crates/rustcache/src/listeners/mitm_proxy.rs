@@ -46,6 +46,20 @@ pub async fn serve(
     }
 }
 
+/// Handle a single accepted connection (exported for integration tests).
+pub async fn serve_connection(
+    stream: TcpStream,
+    engine: SharedEngine,
+    leaves: Arc<LeafIssuer>,
+) -> anyhow::Result<()> {
+    let state = MitmState {
+        engine,
+        leaves,
+        denylist: Arc::new(dashmap::DashMap::new()),
+    };
+    handle_conn(stream, state).await
+}
+
 async fn handle_conn(mut client: TcpStream, state: MitmState) -> anyhow::Result<()> {
     let _ = client.set_nodelay(true);
     let req = match read_http_request(&mut client).await? {

@@ -91,4 +91,26 @@ mod tests {
         assert_eq!(s[1].ts, 3);
         assert_eq!(s[2].ts, 2);
     }
+
+    #[test]
+    fn default_capacity_is_100() {
+        let r = ReqRing::default();
+        for i in 0..120 {
+            r.push(rec(i));
+        }
+        assert_eq!(r.len(), RING_CAPACITY);
+        assert_eq!(r.len(), 100);
+    }
+
+    #[test]
+    fn snapshot_limit_truncates_to_newest() {
+        let r = ReqRing::new(10);
+        for i in 0..10 {
+            r.push(rec(i));
+        }
+        let s = r.snapshot(3);
+        assert_eq!(s.len(), 3);
+        assert_eq!(s[0].ts, 9);
+        assert_eq!(s[2].ts, 7);
+    }
 }
