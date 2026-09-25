@@ -1,5 +1,10 @@
 # RustCache example configuration
 
+# Root data directory. Relative paths below resolve under this directory.
+# Absolute paths (or ~/...) are used as-is and ignore data_dir.
+# CLI: `--data-dir DIR` overrides this value for the process.
+data_dir = "~/.local/share/rustcache"
+
 [http]
 port = 3128
 
@@ -13,7 +18,7 @@ port = 1080
 bind = "127.0.0.1:8080"
 
 [cache]
-dir = "~/.local/share/rustcache/cache"
+dir = "cache"            # relative → $data_dir/cache
 max_bytes = 2147483648
 max_object_bytes = 52428800
 
@@ -22,10 +27,10 @@ domains = ["*.local", "bank.example", "exact.host"]
 cidrs = ["192.168.0.0/16", "10.0.0.0/8"]
 
 [ca]
-dir = "~/.local/share/rustcache/ca"
+dir = "ca"               # relative → $data_dir/ca
 
 [logs]
-db_path = "~/.local/share/rustcache/logs.db"
+db_path = "logs.db"      # relative → $data_dir/logs.db
 max_rows = 10000
 max_age_days = 7
 cleanup_interval_secs = 300

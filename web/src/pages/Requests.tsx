@@ -8,7 +8,7 @@ import { Tag } from "primereact/tag";
 import { Toast } from "primereact/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { clearRequests, getRequests } from "../api/client";
-import type { RequestQuery, ReqRecord } from "../api/types";
+import type { ReqRecord, RequestQuery } from "../api/types";
 
 function outcomeSeverity(outcome: string): "success" | "info" | "warning" | "danger" | "secondary" {
   switch (outcome) {
@@ -144,6 +144,8 @@ export default function Requests() {
   }, [q, method, outcome, statusCls, timeRange, limit, offset]);
 
   useEffect(() => {
+    // reloadTick forces a refetch on demand
+    void reloadTick;
     load();
   }, [load, reloadTick]);
 

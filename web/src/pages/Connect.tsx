@@ -199,16 +199,12 @@ export default function Connect() {
         <Card title="PAC / WPAD — автоматическая настройка прокси" className="mt-3">
           <p style={{ marginTop: 0 }}>
             URL PAC-скрипта для выбранного адреса (режим:{" "}
-            <Tag value={pacModeLabel} severity="info" />):
+            <Tag value={pacModeLabel} severity="info" />
+            ):
           </p>
           <Code>{pacUrl}</Code>
           <div className="flex gap-2 mb-3">
-            <Button
-              label="Скопировать URL"
-              icon="pi pi-copy"
-              text
-              onClick={() => copy(pacUrl)}
-            />
+            <Button label="Скопировать URL" icon="pi pi-copy" text onClick={() => copy(pacUrl)} />
           </div>
           <p>
             Также доступен как <code>wpad.dat</code>:{" "}
@@ -219,12 +215,12 @@ export default function Connect() {
           </p>
           <ul style={{ lineHeight: "1.7", paddingLeft: "1.25rem" }}>
             <li>
-              <strong>Windows:</strong> Параметры → Сеть и интернет → Прокси-сервер → «Автоматическая
-              настройка прокси» → «Использовать адрес скрипта» → вставьте URL выше.
+              <strong>Windows:</strong> Параметры → Сеть и интернет → Прокси-сервер →
+              «Автоматическая настройка прокси» → «Использовать адрес скрипта» → вставьте URL выше.
             </li>
             <li>
-              <strong>Linux (Firefox):</strong> Настройки → Сеть → «Настройка прокси-сервера» →
-              «URL автоматической настройки прокси» → вставьте URL.
+              <strong>Linux (Firefox):</strong> Настройки → Сеть → «Настройка прокси-сервера» → «URL
+              автоматической настройки прокси» → вставьте URL.
             </li>
             <li>
               <strong>Android:</strong> Wi-Fi → сеть → «Изменить» → Дополнительно → Прокси: «Авто» /

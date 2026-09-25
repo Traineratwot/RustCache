@@ -21,6 +21,9 @@ use rustcache::listeners;
 #[derive(Parser, Debug)]
 #[command(name = "rustcache", version, about = "Caching proxy server")]
 struct Cli {
+    /// Data directory root (cache / CA / logs.db). Overrides config `data_dir`.
+    #[arg(long, value_name = "DIR", global = true)]
+    data_dir: Option<PathBuf>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -73,11 +76,13 @@ async fn main() -> anyhow::Result<()> {
     init_tracing();
     install_crypto_provider();
     let cli = Cli::parse();
+    let data_dir = cli.data_dir;
 
     match cli.command {
-        Commands::Run { config } => run(config).await,
+        Commands::Run { config } => run(config, data_dir).await,
         Commands::GenCa { dir, config } => {
-            let cfg = Config::load_or_default(&config)?;
+            let mut cfg = Config::load_or_default(&config)?;
+            cfg.apply_data_dir_override(data_dir.as_deref());
             let dir = dir.unwrap_or_else(|| cfg.ca_dir());
             let material = generate_ca(&dir)?;
             tracing::info!(cert = %material.cert_path.display(), "CA generated");
@@ -85,7 +90,8 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Commands::ExportCa { dir, config, pem } => {
-            let cfg = Config::load_or_default(&config)?;
+            let mut cfg = Config::load_or_default(&config)?;
+            cfg.apply_data_dir_override(data_dir.as_deref());
             let dir = dir.unwrap_or_else(|| cfg.ca_dir());
             let material = load_ca(&dir)?;
             if pem {
@@ -96,7 +102,8 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Commands::Purge { config } => {
-            let cfg = Config::load_or_default(&config)?;
+            let mut cfg = Config::load_or_default(&config)?;
+            cfg.apply_data_dir_override(data_dir.as_deref());
             let disk = DiskCache::open(cfg.cache_dir())?;
             let n = disk.purge_all().await?;
             println!("purged {n} files");
@@ -105,10 +112,18 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn run(config_path: PathBuf) -> anyhow::Result<()> {
-    let cfg = Config::load_or_default(&config_path)?;
+async fn run(config_path: PathBuf, data_dir: Option<PathBuf>) -> anyhow::Result<()> {
+    let mut cfg = Config::load_or_default(&config_path)?;
+    cfg.apply_data_dir_override(data_dir.as_deref());
     let cache_dir = cfg.cache_dir();
     let ca_dir = cfg.ca_dir();
+    tracing::info!(
+        data_dir = %cfg.data_dir_path().display(),
+        cache = %cache_dir.display(),
+        ca = %ca_dir.display(),
+        logs = %cfg.logs_db_path().display(),
+        "data paths"
+    );
     let disk = DiskCache::open(&cache_dir)?;
     let mem = MemCache::new(cfg.cache.max_bytes.min(256 * 1024 * 1024));
     let exclusions = ExclusionSet::from_specs(&cfg.exclude.domains, &cfg.exclude.cidrs);

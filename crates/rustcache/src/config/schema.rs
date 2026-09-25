@@ -4,8 +4,11 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    /// Root data directory. Relative cache/ca/logs paths resolve under it.
+    #[serde(default = "default_data_dir")]
+    pub data_dir: String,
     #[serde(default)]
     pub http: HttpConfig,
     #[serde(default)]
@@ -24,6 +27,27 @@ pub struct Config {
     pub pac: PacConfig,
     #[serde(default)]
     pub logs: LogConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            data_dir: default_data_dir(),
+            http: HttpConfig::default(),
+            https: HttpsConfig::default(),
+            socks5: Socks5Config::default(),
+            api: ApiConfig::default(),
+            cache: CacheConfig::default(),
+            exclude: ExcludeConfig::default(),
+            ca: CaConfig::default(),
+            pac: PacConfig::default(),
+            logs: LogConfig::default(),
+        }
+    }
+}
+
+fn default_data_dir() -> String {
+    "~/.local/share/rustcache".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,7 +143,7 @@ impl Default for CacheConfig {
 }
 
 fn default_cache_dir() -> String {
-    "~/.local/share/rustcache/cache".into()
+    "cache".into()
 }
 fn default_max_bytes() -> u64 {
     2 * 1024 * 1024 * 1024
@@ -151,7 +175,7 @@ impl Default for CaConfig {
 }
 
 fn default_ca_dir() -> String {
-    "~/.local/share/rustcache/ca".into()
+    "ca".into()
 }
 
 /// Proxy return strategy emitted into `FindProxyForURL`.
@@ -218,7 +242,7 @@ impl Default for LogConfig {
 }
 
 fn default_logs_db_path() -> String {
-    "~/.local/share/rustcache/logs.db".into()
+    "logs.db".into()
 }
 fn default_logs_max_rows() -> u64 {
     10_000
@@ -244,6 +268,16 @@ pub fn expand_tilde(p: &str) -> PathBuf {
     PathBuf::from(p)
 }
 
+/// Resolve `p` under `data_dir` when relative; absolute (or `~/`) paths stand alone.
+fn resolve_under(data_dir: &Path, p: &str) -> PathBuf {
+    let expanded = expand_tilde(p);
+    if expanded.is_absolute() {
+        expanded
+    } else {
+        data_dir.join(expanded)
+    }
+}
+
 impl Config {
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let text = std::fs::read_to_string(path.as_ref())?;
@@ -259,16 +293,27 @@ impl Config {
         }
     }
 
+    /// Override `data_dir` (CLI `--data-dir`). Relative path overrides still follow it.
+    pub fn apply_data_dir_override(&mut self, dir: Option<impl AsRef<Path>>) {
+        if let Some(d) = dir {
+            self.data_dir = d.as_ref().to_string_lossy().into_owned();
+        }
+    }
+
+    pub fn data_dir_path(&self) -> PathBuf {
+        expand_tilde(&self.data_dir)
+    }
+
     pub fn cache_dir(&self) -> PathBuf {
-        expand_tilde(&self.cache.dir)
+        resolve_under(&self.data_dir_path(), &self.cache.dir)
     }
 
     pub fn ca_dir(&self) -> PathBuf {
-        expand_tilde(&self.ca.dir)
+        resolve_under(&self.data_dir_path(), &self.ca.dir)
     }
 
     pub fn logs_db_path(&self) -> PathBuf {
-        expand_tilde(&self.logs.db_path)
+        resolve_under(&self.data_dir_path(), &self.logs.db_path)
     }
 
     /// Redacted copy safe for `/api/config`.
@@ -312,15 +357,71 @@ dir = "/tmp/ca"
 
     #[test]
     fn defaults_apply() {
-        let cfg: Config = toml::from_str("").unwrap();
+        let cfg: Config = Config::default();
+        assert_eq!(cfg.data_dir, "~/.local/share/rustcache");
         assert_eq!(cfg.api.bind, "127.0.0.1:8080");
         assert!(cfg.pac.enabled);
         assert_eq!(cfg.pac.bind, "0.0.0.0:8081");
         assert_eq!(cfg.pac.mode, PacMode::HttpSocks);
-        assert_eq!(cfg.logs.db_path, "~/.local/share/rustcache/logs.db");
+        assert_eq!(cfg.cache.dir, "cache");
+        assert_eq!(cfg.ca.dir, "ca");
+        assert_eq!(cfg.logs.db_path, "logs.db");
         assert_eq!(cfg.logs.max_rows, 10_000);
         assert_eq!(cfg.logs.max_age_days, 7);
         assert_eq!(cfg.logs.cleanup_interval_secs, 300);
+    }
+
+    #[test]
+    fn empty_toml_uses_defaults() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert_eq!(cfg.data_dir, "~/.local/share/rustcache");
+        assert_eq!(cfg.cache.dir, "cache");
+    }
+
+    #[test]
+    fn relative_paths_resolve_under_data_dir() {
+        let cfg: Config = toml::from_str(
+            r#"
+data_dir = "/var/lib/rustcache"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.data_dir_path(), PathBuf::from("/var/lib/rustcache"));
+        assert_eq!(cfg.cache_dir(), PathBuf::from("/var/lib/rustcache/cache"));
+        assert_eq!(cfg.ca_dir(), PathBuf::from("/var/lib/rustcache/ca"));
+        assert_eq!(
+            cfg.logs_db_path(),
+            PathBuf::from("/var/lib/rustcache/logs.db")
+        );
+    }
+
+    #[test]
+    fn absolute_paths_override_data_dir() {
+        let cfg: Config = toml::from_str(
+            r#"
+data_dir = "/var/lib/rustcache"
+[cache]
+dir = "/tmp/rc-cache"
+[ca]
+dir = "/tmp/rc-ca"
+[logs]
+db_path = "/tmp/rc-logs.db"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.cache_dir(), PathBuf::from("/tmp/rc-cache"));
+        assert_eq!(cfg.ca_dir(), PathBuf::from("/tmp/rc-ca"));
+        assert_eq!(cfg.logs_db_path(), PathBuf::from("/tmp/rc-logs.db"));
+    }
+
+    #[test]
+    fn data_dir_override_moves_relative_paths() {
+        let mut cfg: Config = toml::from_str("").unwrap();
+        cfg.apply_data_dir_override(Some("/opt/rc"));
+        assert_eq!(cfg.data_dir_path(), PathBuf::from("/opt/rc"));
+        assert_eq!(cfg.cache_dir(), PathBuf::from("/opt/rc/cache"));
+        assert_eq!(cfg.ca_dir(), PathBuf::from("/opt/rc/ca"));
+        assert_eq!(cfg.logs_db_path(), PathBuf::from("/opt/rc/logs.db"));
     }
 
     #[test]
@@ -346,6 +447,7 @@ cleanup_interval_secs = 60
         let cfg: Config = toml::from_str("").unwrap();
         let p = cfg.logs_db_path();
         assert!(!p.to_string_lossy().starts_with('~'));
+        assert!(p.ends_with("logs.db"));
     }
 
     #[test]

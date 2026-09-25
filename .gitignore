@@ -6,4 +6,5 @@ web/dist
 *.key
 /ca/
 /cache/
+/tmp
 config.toml

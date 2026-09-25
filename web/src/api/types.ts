@@ -55,6 +55,7 @@ export interface Matcher {
 export type PacMode = "http" | "socks" | "http+socks";
 
 export interface Config {
+  data_dir: string;
   http: { port: number };
   https: { port: number };
   socks5: { port: number };

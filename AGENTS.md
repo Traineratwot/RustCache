@@ -20,11 +20,13 @@ Plans: `docs/plans/`. Delivery reports: `docs/compose/spec/`.
 | What | Where |
 |------|--------|
 | Config | `config.toml` (gitignored) — copy from `config.example.toml`. Missing file → built-in defaults. |
-| Cache dir | `~/.local/share/rustcache/cache` (`[cache] dir`) |
-| Root CA | `~/.local/share/rustcache/ca/` (`[ca] dir`) — `ca.crt` + `ca.key` (0600) |
-| Request log DB | `~/.local/share/rustcache/logs.db` (`[logs] db_path`), SQLite WAL, file mode 0600 |
+| Data root | `data_dir` (default `~/.local/share/rustcache`) — CLI `--data-dir DIR` overrides |
+| Cache dir | `$data_dir/cache` (`[cache] dir`, relative paths resolve under `data_dir`) |
+| Root CA | `$data_dir/ca/` (`[ca] dir`) — `ca.crt` + `ca.key` (0600) |
+| Request log DB | `$data_dir/logs.db` (`[logs] db_path`), SQLite WAL, file mode 0600 |
 
-Config sections: `[http]` `[https]` `[socks5]` `[api]` `[cache]` `[exclude]` `[ca]` `[pac]` `[logs]`.
+Config sections: `data_dir` + `[http]` `[https]` `[socks5]` `[api]` `[cache]` `[exclude]` `[ca]` `[pac]` `[logs]`.
+Relative `dir`/`db_path` values resolve under `data_dir`; absolute paths (or `~/...`) are used as-is.
 Tilde paths expand via `Config::expand_tilde`. `config.example.toml` is the schema reference.
 
 ## Logs
@@ -57,6 +59,7 @@ cargo clippy --workspace -- -D warnings
 cargo fmt --check
 
 cargo run -p rustcache -- run --config config.toml   # starts all listeners + API
+cargo run -p rustcache -- run --data-dir /var/lib/rustcache   # override data root
 cargo run -p rustcache -- gen-ca                     # optional: run auto-creates CA via load_ca
 cargo run -p rustcache -- export-ca --pem
 cargo run -p rustcache -- purge                      # clear on-disk cache

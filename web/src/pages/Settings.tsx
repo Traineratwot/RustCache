@@ -127,6 +127,19 @@ export default function Settings() {
             </Card>
           </div>
           <div className="col-12 md:col-6">
+            <Card title="Пути">
+              <Row label="Данные (data_dir)" value={cfg.data_dir} />
+              <Row label="Кеш" value={cfg.cache.dir} />
+              <Row label="CA" value={cfg.ca.dir} />
+              <Row label="Журнал" value={cfg.logs.db_path} />
+              <p className="text-color-secondary" style={{ marginBottom: 0, fontSize: "0.9rem" }}>
+                Относительные пути разрешаются от data_dir. Абсолютные используются как есть. CLI:{" "}
+                <code>--data-dir</code>. Смена каталога — через config.toml или флаг, нужен
+                перезапуск.
+              </p>
+            </Card>
+          </div>
+          <div className="col-12 md:col-6">
             <Card title="Кеш">
               <Row label="Директория" value={cfg.cache.dir} />
               <Row
