@@ -49,6 +49,9 @@ impl DiskCache {
 
     /// Load metadata if present.
     pub async fn load_meta(&self, key: &str) -> Result<Option<CacheMeta>> {
+        if !is_hex_key(key) {
+            return Ok(None);
+        }
         let path = self.index_path(key);
         let bytes = match tokio::fs::read(&path).await {
             Ok(b) => b,
@@ -61,6 +64,9 @@ impl DiskCache {
 
     /// Load body bytes if present.
     pub async fn load_body(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        if !is_hex_key(key) {
+            return Ok(None);
+        }
         let path = self.object_path(key);
         match tokio::fs::read(&path).await {
             Ok(b) => Ok(Some(b)),
@@ -100,6 +106,9 @@ impl DiskCache {
 
     /// Touch `last_access` for LRU (best-effort).
     pub async fn touch(&self, key: &str) -> Result<()> {
+        if !is_hex_key(key) {
+            return Ok(());
+        }
         let mut meta = match self.load_meta(key).await? {
             Some(m) => m,
             None => return Ok(()),
@@ -114,6 +123,9 @@ impl DiskCache {
     }
 
     pub async fn remove(&self, key: &str) -> Result<bool> {
+        if !is_hex_key(key) {
+            return Ok(false);
+        }
         let _guard = self.write_lock.lock().await;
         let index = self.index_path(key);
         let object = self.object_path(key);

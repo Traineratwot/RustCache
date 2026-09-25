@@ -10,7 +10,7 @@ use tokio::net::{TcpListener, TcpStream};
 use rustcache_core::http::fetch::parse_url;
 use rustcache_core::stats::ring::ReqRecord;
 
-use crate::engine::{Lookup, SharedEngine};
+use crate::engine::{CacheEngine, Lookup, SharedEngine};
 
 pub async fn serve(addr: std::net::SocketAddr, engine: SharedEngine) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
@@ -174,9 +174,10 @@ async fn handle_absolute(
     let host = parse_url(&url).map(|u| u.host).unwrap_or_default();
     let method = req.method.to_uppercase();
     let is_get_head = method == "GET" || method == "HEAD";
+    let private_req = CacheEngine::request_is_private(&req.headers);
 
-    // Exclusions → bypass (no cache)
-    if engine.is_excluded_url(&url).await {
+    // Exclusions or private (Authorization) requests → bypass (no cache)
+    if engine.is_excluded_url(&url).await || private_req {
         engine.metrics().add_bypass();
         let resp = engine
             .fetcher
@@ -379,6 +380,7 @@ pub async fn write_response(
     let reason = reason_phrase(status);
     let mut out = format!("HTTP/1.1 {status} {reason}\r\n");
     let mut has_cl = false;
+    let mut has_conn = false;
     for (k, v) in headers {
         if k.eq_ignore_ascii_case("transfer-encoding") {
             continue;
@@ -387,6 +389,7 @@ pub async fn write_response(
             has_cl = true;
         }
         if k.eq_ignore_ascii_case("connection") {
+            has_conn = true;
             out.push_str("Connection: close\r\n");
             continue;
         }
@@ -398,7 +401,10 @@ pub async fn write_response(
     if !has_cl {
         out.push_str(&format!("Content-Length: {}\r\n", body.len()));
     }
-    out.push_str("Connection: close\r\n\r\n");
+    if !has_conn {
+        out.push_str("Connection: close\r\n");
+    }
+    out.push_str("\r\n");
     stream.write_all(out.as_bytes()).await?;
     if !body.is_empty() {
         stream.write_all(body).await?;

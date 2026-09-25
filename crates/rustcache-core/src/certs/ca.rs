@@ -56,7 +56,16 @@ pub fn generate_ca(dir: impl AsRef<Path>) -> Result<CaMaterial> {
     let cert_path = dir.join("ca.crt");
     let key_path = dir.join("ca.key");
     std::fs::write(&cert_path, &cert_pem)?;
-    std::fs::write(&key_path, &key_pem)?;
+    use std::os::unix::fs::OpenOptionsExt;
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&key_path)?;
+        std::io::Write::write_all(&mut f, key_pem.as_bytes())?;
+    }
 
     let material = CaMaterial {
         cert_pem,

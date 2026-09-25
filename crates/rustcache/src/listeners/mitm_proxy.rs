@@ -14,7 +14,7 @@ use rustcache_core::certs::leaf::LeafIssuer;
 use rustcache_core::http::fetch::parse_url;
 use rustcache_core::stats::ring::ReqRecord;
 
-use crate::engine::{upstream_tls_connector, Lookup, SharedEngine};
+use crate::engine::{upstream_tls_connector, CacheEngine, Lookup, SharedEngine};
 use crate::listeners::http_proxy::{read_http_request, write_response_to, HttpRequest};
 
 pub struct MitmState {
@@ -121,8 +121,8 @@ async fn handle_conn(mut client: TcpStream, state: MitmState) -> anyhow::Result<
         k.eq_ignore_ascii_case("upgrade")
             || (k.eq_ignore_ascii_case("connection") && v.to_ascii_lowercase().contains("upgrade"))
     }) {
-        // WebSocket / upgrade → bypass cache, pipe to origin
-        pipe_upgrade(&mut tls_stream, &req, &state).await?;
+        // WebSocket / upgrade → bypass cache, pipe to origin using CONNECT authority
+        pipe_upgrade(&mut tls_stream, &req, &state, &authority).await?;
         return Ok(());
     }
     let url = format!("https://{authority}{}", path_of(&req.target));
@@ -169,7 +169,10 @@ async fn handle_mitm_request<W: AsyncWriteExt + Unpin + tokio::io::AsyncRead>(
     let status: u16;
     let resp_len: u64;
 
-    if !is_get_head || engine.is_excluded_url(url).await {
+    if !is_get_head
+        || engine.is_excluded_url(url).await
+        || CacheEngine::request_is_private(&req.headers)
+    {
         engine.metrics().add_bypass();
         outcome = "BYPASS";
         let tls = upstream_tls_connector();
@@ -311,22 +314,14 @@ async fn pipe_upgrade<S: AsyncReadExt + AsyncWriteExt + Unpin>(
     client: &mut S,
     req: &HttpRequest,
     state: &MitmState,
+    authority: &str,
 ) -> anyhow::Result<()> {
-    // Connect to origin over TLS and forward the raw request, then pipe.
-    let url = if req.target.contains("://") {
-        req.target.clone()
-    } else {
-        "https://example.com/".into()
-    };
-    let parsed = parse_url(&url)?;
-    let authority = match parsed.port {
-        Some(p) => format!("{}:{}", parsed.host, p),
-        None => format!("{}:443", parsed.host),
-    };
-    let tcp = TcpStream::connect(&authority).await?;
+    // Connect to the CONNECT authority over TLS and pipe the upgraded connection.
+    let host = authority.split(':').next().unwrap_or(authority).to_string();
+    let tcp = TcpStream::connect(authority).await?;
     let connector = upstream_tls_connector();
-    let domain = rustls::pki_types::ServerName::try_from(parsed.host.clone())
-        .map_err(|_| anyhow::anyhow!("bad sni"))?;
+    let domain =
+        rustls::pki_types::ServerName::try_from(host).map_err(|_| anyhow::anyhow!("bad sni"))?;
     let mut upstream = connector.connect(domain, tcp).await?;
 
     // Re-serialize the request line as origin-form.

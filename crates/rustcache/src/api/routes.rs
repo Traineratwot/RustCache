@@ -146,10 +146,10 @@ async fn ca_crt(State(st): State<ApiState>) -> Response {
         st.ca.cert_pem.clone(),
     )
         .into_response();
-    resp.headers_mut().insert(
-        axum::http::header::CONTENT_DISPOSITION,
-        "attachment; filename=\"ca.crt\"".parse().unwrap(),
-    );
+    if let Ok(val) = "attachment; filename=\"ca.crt\"".parse() {
+        resp.headers_mut()
+            .insert(axum::http::header::CONTENT_DISPOSITION, val);
+    }
     resp
 }
 

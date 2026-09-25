@@ -128,7 +128,7 @@ impl OriginFetcher {
                 tls_stream.write_all(b).await?;
             }
             tls_stream.flush().await?;
-            let resp = read_http1_response(&mut tls_stream, max_body).await?;
+            let resp = read_http1_response(&mut tls_stream, max_body, method).await?;
             Ok(resp)
         } else {
             let mut stream = stream;
@@ -137,7 +137,7 @@ impl OriginFetcher {
                 stream.write_all(b).await?;
             }
             stream.flush().await?;
-            let resp = read_http1_response(&mut stream, max_body).await?;
+            let resp = read_http1_response(&mut stream, max_body, method).await?;
             Ok(resp)
         }
     }
@@ -183,6 +183,7 @@ pub fn parse_url(url: &str) -> Result<ParsedUrl> {
 async fn read_http1_response<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     max_body: u64,
+    method: &str,
 ) -> Result<OriginResponse> {
     let mut buf = Vec::with_capacity(8192);
     let mut tmp = [0u8; 8192];
@@ -232,7 +233,10 @@ async fn read_http1_response<S: AsyncRead + AsyncWrite + Unpin>(
         }
     }
 
-    let body = if chunked {
+    // HEAD responses carry Content-Length but no body.
+    let body = if method.eq_ignore_ascii_case("HEAD") || status == 304 || status == 204 {
+        Vec::new()
+    } else if chunked {
         read_chunked(stream, &mut rest, max_body).await?
     } else if let Some(len) = content_length {
         read_exact_len(stream, &mut rest, len, max_body).await?
@@ -316,7 +320,10 @@ async fn read_chunked<S: AsyncRead + Unpin>(
             }
             rest.extend_from_slice(&tmp[..n]);
         }
-        let line_end = rest.windows(2).position(|w| w == b"\r\n").unwrap();
+        let line_end = rest
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .ok_or_else(|| crate::Error::Protocol("missing chunk size line".into()))?;
         let size_line = String::from_utf8_lossy(&rest[..line_end]).to_string();
         rest.drain(..line_end + 2);
         let size_str = size_line.split(';').next().unwrap_or("").trim();
@@ -343,7 +350,10 @@ async fn read_chunked<S: AsyncRead + Unpin>(
                     }
                     rest.extend_from_slice(&tmp[..n]);
                 }
-                let e = rest.windows(2).position(|w| w == b"\r\n").unwrap();
+                let e = rest
+                    .windows(2)
+                    .position(|w| w == b"\r\n")
+                    .ok_or_else(|| crate::Error::Protocol("missing trailer line".into()))?;
                 rest.drain(..e + 2);
             }
         }

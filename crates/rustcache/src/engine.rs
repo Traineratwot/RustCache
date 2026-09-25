@@ -60,6 +60,13 @@ impl CacheEngine {
         self.exclusions.read().await.is_excluded_url(url)
     }
 
+    /// Requests with Authorization must not share cached responses.
+    pub fn request_is_private(headers: &[(String, String)]) -> bool {
+        headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+    }
+
     pub async fn lookup(&self, url: &str) -> Lookup {
         let key = cache_key(url);
         if let Some(e) = self.mem.get(key.as_str()).await {
@@ -108,6 +115,9 @@ impl CacheEngine {
     ) -> anyhow::Result<CachedEntry> {
         let key = cache_key(url).as_str().to_string();
         let mut headers = req_headers.to_vec();
+        let has_auth = headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("authorization"));
         if let Some(prev) = revalidate {
             if let Some(etag) = &prev.meta.etag {
                 headers.push(("If-None-Match".into(), etag.clone()));
@@ -117,12 +127,16 @@ impl CacheEngine {
         }
 
         let max_object_bytes = self.max_object_bytes;
-        let fetcher_timeout = self.fetcher.connect_timeout;
-        let _ = fetcher_timeout;
+        // Do not coalesce authenticated fetches (per-user responses).
+        let coalesce_key = if has_auth {
+            format!("{key}:auth:{}", headers.len())
+        } else {
+            key.clone()
+        };
 
         let resp = self
             .coalesce
-            .run(&key, || async {
+            .run(&coalesce_key, || async {
                 self.fetcher
                     .fetch(method, url, &headers, body, tls, max_object_bytes)
                     .await
@@ -158,11 +172,17 @@ impl CacheEngine {
                 let _ = self.disk.store(meta, &entry.body).await;
                 return Ok(entry);
             }
+            // 304 without a stored entry: never cache it as a response body.
+            return Err(anyhow::anyhow!(
+                "origin returned 304 without a revalidation base"
+            ));
         }
 
         let policy = CachePolicy::from_headers(resp.status, &resp.headers);
-        let decision = policy
-            .decide(method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD"));
+        let decision = policy.decide(
+            (method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD"))
+                && !has_auth,
+        );
         let headers = resp.headers.clone();
         let meta = policy.to_meta(&key, url, resp.status, headers);
         let entry = CachedEntry {
