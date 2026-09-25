@@ -12,7 +12,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 use rustcache_core::certs::leaf::LeafIssuer;
 use rustcache_core::http::fetch::parse_url;
-use rustcache_core::stats::ring::ReqRecord;
+use rustcache_core::stats::ReqRecord;
 
 use crate::engine::{upstream_tls_connector, CacheEngine, Lookup, SharedEngine};
 use crate::listeners::http_proxy::{

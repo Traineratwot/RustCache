@@ -4,3 +4,6 @@ pub mod api;
 pub mod config;
 pub mod engine;
 pub mod listeners;
+
+#[cfg(feature = "embed-ui")]
+pub mod ui_embed;

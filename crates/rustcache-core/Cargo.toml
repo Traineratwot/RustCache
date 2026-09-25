@@ -15,6 +15,7 @@ ipnet.workspace = true
 moka.workspace = true
 parking_lot.workspace = true
 rcgen.workspace = true
+rusqlite.workspace = true
 rustls.workspace = true
 rustls-pemfile.workspace = true
 serde.workspace = true

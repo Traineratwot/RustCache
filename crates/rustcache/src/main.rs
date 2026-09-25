@@ -12,7 +12,7 @@ use rustcache_core::certs::ca::{export_pem, generate_ca, load_ca};
 use rustcache_core::certs::leaf::LeafIssuer;
 use rustcache_core::excl::ExclusionSet;
 
-use rustcache::api::{router, ApiState};
+use rustcache::api::{pac_router, router, ApiState};
 use rustcache::config::watch::LiveConfig;
 use rustcache::config::Config;
 use rustcache::engine::CacheEngine;
@@ -112,10 +112,12 @@ async fn run(config_path: PathBuf) -> anyhow::Result<()> {
     let disk = DiskCache::open(&cache_dir)?;
     let mem = MemCache::new(cfg.cache.max_bytes.min(256 * 1024 * 1024));
     let exclusions = ExclusionSet::from_specs(&cfg.exclude.domains, &cfg.exclude.cidrs);
+    let logs = Arc::new(rustcache_core::stats::LogStore::open(cfg.logs_db_path())?);
     let engine = Arc::new(CacheEngine::new(
         disk,
         mem,
         exclusions,
+        logs.clone(),
         cfg.cache.max_object_bytes,
         cfg.cache.max_bytes,
     ));
@@ -143,6 +145,7 @@ async fn run(config_path: PathBuf) -> anyhow::Result<()> {
         config: live.clone(),
         ca: ca.clone(),
         config_path: config_path.clone(),
+        started_at: std::time::Instant::now(),
     };
 
     // Apply live config reloads (exclusions etc.)
@@ -162,6 +165,30 @@ async fn run(config_path: PathBuf) -> anyhow::Result<()> {
         });
     }
 
+    // Periodic request-log retention cleanup.
+    {
+        let logs = logs.clone();
+        let live = live.clone();
+        tokio::spawn(async move {
+            loop {
+                let iv = {
+                    let cfg = live.get().await;
+                    cfg.logs.cleanup_interval_secs.clamp(10, 86_400)
+                };
+                tokio::time::sleep(std::time::Duration::from_secs(iv)).await;
+                let cfg = live.get().await;
+                match logs.cleanup(cfg.logs.max_rows, cfg.logs.max_age_days).await {
+                    Ok((by_age, by_rows)) => {
+                        if by_age + by_rows > 0 {
+                            tracing::info!(by_age, by_rows, "request log cleanup");
+                        }
+                    }
+                    Err(e) => tracing::warn!(error = %e, "request log cleanup failed"),
+                }
+            }
+        });
+    }
+
     let http_addr = format!("0.0.0.0:{}", cfg.http.port).parse()?;
     let https_addr = format!("0.0.0.0:{}", cfg.https.port).parse()?;
     let socks_addr = format!("0.0.0.0:{}", cfg.socks5.port).parse()?;
@@ -172,9 +199,28 @@ async fn run(config_path: PathBuf) -> anyhow::Result<()> {
     let engine_socks = engine.clone();
     let leaves_mitm = leaves.clone();
 
-    let api_router = router(state);
+    let api_router = router(state.clone());
+
+    #[cfg(feature = "embed-ui")]
+    let api_router = api_router.fallback(rustcache::ui_embed::spa_handler);
+
     let listener = tokio::net::TcpListener::bind(&api_addr).await?;
     tracing::info!(addr = %api_addr, "api listening");
+
+    // Optional dedicated LAN listener that serves only the two PAC paths.
+    let pac_srv = if cfg.pac.enabled {
+        let pac_addr = cfg.pac.bind.clone();
+        let pac_state = state.clone();
+        let pac_listener = tokio::net::TcpListener::bind(&pac_addr).await?;
+        tracing::info!(addr = %pac_addr, "pac listener listening");
+        Some(tokio::spawn(async move {
+            if let Err(e) = axum::serve(pac_listener, pac_router(pac_state)).await {
+                tracing::error!(error = %e, "pac listener failed");
+            }
+        }))
+    } else {
+        None
+    };
 
     let http_srv = tokio::spawn(async move {
         if let Err(e) = listeners::http_proxy::serve(http_addr, engine_http).await {
@@ -198,5 +244,8 @@ async fn run(config_path: PathBuf) -> anyhow::Result<()> {
     http_srv.abort();
     https_srv.abort();
     socks_srv.abort();
+    if let Some(s) = pac_srv {
+        s.abort();
+    }
     Ok(())
 }

@@ -6,7 +6,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::engine::SharedEngine;
-use rustcache_core::stats::ring::ReqRecord;
+use rustcache_core::stats::ReqRecord;
 
 const VER: u8 = 0x05;
 const METHOD_NO_AUTH: u8 = 0x00;
@@ -152,7 +152,7 @@ async fn handle(mut client: TcpStream, engine: SharedEngine) -> anyhow::Result<(
             });
             Ok(())
         }
-        Err(e) => {
+        Err(_e) => {
             engine.metrics().add_error();
             client
                 .write_all(&[VER, 0x05, 0x00, ATYP_IPV4, 0, 0, 0, 0, 0, 0])
@@ -163,7 +163,7 @@ async fn handle(mut client: TcpStream, engine: SharedEngine) -> anyhow::Result<(
                 url: target.to_string(),
                 host: host_label,
                 status: 0,
-                outcome: format!("ERROR:{e}"),
+                outcome: "ERROR".into(),
                 duration_ms: started.elapsed().as_millis() as u64,
                 resp_bytes: 0,
             });

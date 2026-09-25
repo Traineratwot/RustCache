@@ -21,10 +21,12 @@ http-body-util = "0.1"
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
 ipnet = { version = "2", features = ["serde"] }
+local-ip-address = "0.6"
 moka = { version = "0.12", features = ["future"] }
 notify = "6"
 parking_lot = "0.12"
 rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2"
 serde = { version = "1", features = ["derive"] }

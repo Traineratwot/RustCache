@@ -193,8 +193,11 @@ pub async fn spawn_echo() -> SocketAddr {
 
 /// Fresh engine backed by a unique temp dir.
 pub async fn spawn_engine(exclusions: ExclusionSet) -> (SharedEngine, std::path::PathBuf) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let n = N.fetch_add(1, Ordering::SeqCst);
     let dir = std::env::temp_dir().join(format!(
-        "rc-it-{}-{}",
+        "rc-it-{}-{n}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -204,10 +207,12 @@ pub async fn spawn_engine(exclusions: ExclusionSet) -> (SharedEngine, std::path:
     let _ = std::fs::remove_dir_all(&dir);
     let disk = DiskCache::open(&dir).unwrap();
     let mem = MemCache::new(8 * 1024 * 1024);
+    let logs = Arc::new(rustcache_core::stats::LogStore::open(dir.join("logs.db")).unwrap());
     let engine = Arc::new(CacheEngine::new(
         disk,
         mem,
         exclusions,
+        logs,
         16 * 1024 * 1024,
         64 * 1024 * 1024,
     ));

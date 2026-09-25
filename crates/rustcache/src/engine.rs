@@ -12,7 +12,7 @@ use rustcache_core::excl::ExclusionSet;
 use rustcache_core::http::cache_policy::{CacheDecision, CachePolicy};
 use rustcache_core::http::fetch::{OriginFetcher, OriginResponse};
 use rustcache_core::stats::metrics::Metrics;
-use rustcache_core::stats::ring::{ReqRecord, ReqRing};
+use rustcache_core::stats::{LogStore, ReqRecord};
 use tokio::sync::RwLock;
 
 pub type SharedEngine = Arc<CacheEngine>;
@@ -21,7 +21,7 @@ pub struct CacheEngine {
     pub disk: DiskCache,
     pub mem: MemCache,
     pub metrics: Arc<Metrics>,
-    pub ring: Arc<ReqRing>,
+    pub logs: Arc<LogStore>,
     pub exclusions: RwLock<ExclusionSet>,
     pub fetcher: OriginFetcher,
     pub max_object_bytes: u64,
@@ -40,6 +40,7 @@ impl CacheEngine {
         disk: DiskCache,
         mem: MemCache,
         exclusions: ExclusionSet,
+        logs: Arc<LogStore>,
         max_object_bytes: u64,
         max_bytes: u64,
     ) -> Self {
@@ -47,7 +48,7 @@ impl CacheEngine {
             disk,
             mem,
             metrics: Metrics::shared(),
-            ring: Arc::new(ReqRing::default()),
+            logs,
             exclusions: RwLock::new(exclusions),
             fetcher: OriginFetcher::default(),
             max_object_bytes,
@@ -229,7 +230,7 @@ impl CacheEngine {
     }
 
     pub fn record(&self, rec: ReqRecord) {
-        self.ring.push(rec);
+        self.logs.enqueue(rec);
     }
 
     pub fn metrics(&self) -> Arc<Metrics> {

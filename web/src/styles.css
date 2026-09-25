@@ -1,0 +1,116 @@
+:root {
+  --sidebar-w: 240px;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-family);
+  background: var(--surface-ground);
+  color: var(--text-color);
+}
+
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.app-sidebar {
+  width: var(--sidebar-w);
+  background: var(--surface-card);
+  border-right: 1px solid var(--surface-border);
+  padding: 1.25rem 0;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0 1.25rem 1.25rem;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--primary-color);
+  border-bottom: 1px solid var(--surface-border);
+  margin-bottom: 0.75rem;
+}
+
+.app-brand i {
+  font-size: 1.35rem;
+}
+
+.app-nav a {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.7rem 1.25rem;
+  color: var(--text-color-secondary);
+  text-decoration: none;
+  font-size: 0.95rem;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.app-nav a:hover {
+  background: var(--surface-hover);
+  color: var(--text-color);
+}
+
+.app-nav a.active {
+  background: var(--primary-50);
+  color: var(--primary-color);
+  font-weight: 600;
+  border-right: 3px solid var(--primary-color);
+}
+
+.app-main {
+  flex: 1;
+  padding: 1.5rem 2rem;
+  max-width: 1200px;
+}
+
+.page-title {
+  margin: 0 0 1.25rem;
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.stat-card {
+  background: var(--surface-card);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--border-radius);
+  padding: 1.15rem 1.25rem;
+}
+
+.stat-card .label {
+  font-size: 0.85rem;
+  color: var(--text-color-secondary);
+  margin-bottom: 0.35rem;
+}
+
+.stat-card .value {
+  font-size: 1.65rem;
+  font-weight: 700;
+  color: var(--text-color);
+}
+
+.stat-card .value.accent {
+  color: var(--primary-color);
+}
+
+.mt-2 {
+  margin-top: 1rem;
+}
+
+.mt-3 {
+  margin-top: 1.5rem;
+}

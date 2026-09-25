@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use rustcache_core::certs::ca::CaMaterial;
 use rustcache_core::excl::{ExclusionSet, Matcher};
@@ -16,6 +17,7 @@ pub struct ApiState {
     pub config: LiveConfig,
     pub ca: Arc<CaMaterial>,
     pub config_path: PathBuf,
+    pub started_at: Instant,
 }
 
 impl ApiState {

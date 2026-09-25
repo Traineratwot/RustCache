@@ -20,6 +20,10 @@ pub struct Config {
     pub exclude: ExcludeConfig,
     #[serde(default)]
     pub ca: CaConfig,
+    #[serde(default)]
+    pub pac: PacConfig,
+    #[serde(default)]
+    pub logs: LogConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,6 +154,82 @@ fn default_ca_dir() -> String {
     "~/.local/share/rustcache/ca".into()
 }
 
+/// Proxy return strategy emitted into `FindProxyForURL`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub enum PacMode {
+    #[serde(rename = "http")]
+    Http,
+    #[serde(rename = "socks")]
+    Socks,
+    #[default]
+    #[serde(rename = "http+socks")]
+    HttpSocks,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PacConfig {
+    #[serde(default = "default_pac_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_pac_bind")]
+    pub bind: String,
+    #[serde(default)]
+    pub mode: PacMode,
+}
+
+impl Default for PacConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_pac_enabled(),
+            bind: default_pac_bind(),
+            mode: PacMode::default(),
+        }
+    }
+}
+
+fn default_pac_enabled() -> bool {
+    true
+}
+
+fn default_pac_bind() -> String {
+    "0.0.0.0:8081".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogConfig {
+    #[serde(default = "default_logs_db_path")]
+    pub db_path: String,
+    #[serde(default = "default_logs_max_rows")]
+    pub max_rows: u64,
+    #[serde(default = "default_logs_max_age_days")]
+    pub max_age_days: u64,
+    #[serde(default = "default_logs_cleanup_interval_secs")]
+    pub cleanup_interval_secs: u64,
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            db_path: default_logs_db_path(),
+            max_rows: default_logs_max_rows(),
+            max_age_days: default_logs_max_age_days(),
+            cleanup_interval_secs: default_logs_cleanup_interval_secs(),
+        }
+    }
+}
+
+fn default_logs_db_path() -> String {
+    "~/.local/share/rustcache/logs.db".into()
+}
+fn default_logs_max_rows() -> u64 {
+    10_000
+}
+fn default_logs_max_age_days() -> u64 {
+    7
+}
+fn default_logs_cleanup_interval_secs() -> u64 {
+    300
+}
+
 pub fn expand_tilde(p: &str) -> PathBuf {
     if let Some(rest) = p.strip_prefix("~/") {
         if let Ok(home) = std::env::var("HOME") {
@@ -185,6 +265,10 @@ impl Config {
 
     pub fn ca_dir(&self) -> PathBuf {
         expand_tilde(&self.ca.dir)
+    }
+
+    pub fn logs_db_path(&self) -> PathBuf {
+        expand_tilde(&self.logs.db_path)
     }
 
     /// Redacted copy safe for `/api/config`.
@@ -230,5 +314,71 @@ dir = "/tmp/ca"
     fn defaults_apply() {
         let cfg: Config = toml::from_str("").unwrap();
         assert_eq!(cfg.api.bind, "127.0.0.1:8080");
+        assert!(cfg.pac.enabled);
+        assert_eq!(cfg.pac.bind, "0.0.0.0:8081");
+        assert_eq!(cfg.pac.mode, PacMode::HttpSocks);
+        assert_eq!(cfg.logs.db_path, "~/.local/share/rustcache/logs.db");
+        assert_eq!(cfg.logs.max_rows, 10_000);
+        assert_eq!(cfg.logs.max_age_days, 7);
+        assert_eq!(cfg.logs.cleanup_interval_secs, 300);
+    }
+
+    #[test]
+    fn logs_parse() {
+        let cfg: Config = toml::from_str(
+            r#"
+[logs]
+db_path = "/tmp/rc-logs.db"
+max_rows = 50
+max_age_days = 3
+cleanup_interval_secs = 60
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.logs.db_path, "/tmp/rc-logs.db");
+        assert_eq!(cfg.logs.max_rows, 50);
+        assert_eq!(cfg.logs.max_age_days, 3);
+        assert_eq!(cfg.logs.cleanup_interval_secs, 60);
+    }
+
+    #[test]
+    fn logs_db_path_expands_tilde() {
+        let cfg: Config = toml::from_str("").unwrap();
+        let p = cfg.logs_db_path();
+        assert!(!p.to_string_lossy().starts_with('~'));
+    }
+
+    #[test]
+    fn pac_parse() {
+        let cfg: Config = toml::from_str(
+            r#"
+[pac]
+enabled = false
+bind = "0.0.0.0:9090"
+mode = "http"
+"#,
+        )
+        .unwrap();
+        assert!(!cfg.pac.enabled);
+        assert_eq!(cfg.pac.bind, "0.0.0.0:9090");
+        assert_eq!(cfg.pac.mode, PacMode::Http);
+
+        let cfg: Config = toml::from_str(
+            r#"
+[pac]
+mode = "socks"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.pac.mode, PacMode::Socks);
+
+        let cfg: Config = toml::from_str(
+            r#"
+[pac]
+mode = "http+socks"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.pac.mode, PacMode::HttpSocks);
     }
 }

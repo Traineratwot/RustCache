@@ -23,3 +23,14 @@ cidrs = ["192.168.0.0/16", "10.0.0.0/8"]
 
 [ca]
 dir = "~/.local/share/rustcache/ca"
+
+[logs]
+db_path = "~/.local/share/rustcache/logs.db"
+max_rows = 10000
+max_age_days = 7
+cleanup_interval_secs = 300
+
+[pac]
+enabled = true
+bind = "0.0.0.0:8081"
+mode = "http+socks"   # "http" | "socks" | "http+socks"

@@ -8,7 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use rustcache_core::http::fetch::parse_url;
-use rustcache_core::stats::ring::ReqRecord;
+use rustcache_core::stats::ReqRecord;
 
 use crate::engine::{CacheEngine, Lookup, SharedEngine};
 
