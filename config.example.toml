@@ -1,0 +1,25 @@
+# RustCache example configuration
+
+[http]
+port = 3128
+
+[https]
+port = 3129
+
+[socks5]
+port = 1080
+
+[api]
+bind = "127.0.0.1:8080"
+
+[cache]
+dir = "~/.local/share/rustcache/cache"
+max_bytes = 2147483648
+max_object_bytes = 52428800
+
+[exclude]
+domains = ["*.local", "bank.example", "exact.host"]
+cidrs = ["192.168.0.0/16", "10.0.0.0/8"]
+
+[ca]
+dir = "~/.local/share/rustcache/ca"
