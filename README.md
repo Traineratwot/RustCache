@@ -10,6 +10,24 @@ Caching HTTP/HTTPS proxy (MITM + disk/mem cache) with a SOCKS5 tunnel and a loca
 - **REST API + SPA** on `127.0.0.1:8080` — health, request log, cache, exclusions, config, CA download
 - **PAC / WPAD** on `:8081` (optional) — LAN-facing, serves only PAC files
 
+## Screenshots
+
+**Overview** — hit rate, traffic over time, outcomes, top hosts
+
+![Overview](docs/media/screen_4.png)
+
+**Requests** — live request log with HIT / MISS / ERROR badges
+
+![Requests](docs/media/screen_2.png)
+
+**Settings** — every `config.toml` key from the UI (hot / restart badges)
+
+![Settings](docs/media/screen_1.png)
+
+**Connect** — LAN addresses, PAC / WPAD URL, per-platform setup
+
+![Connect](docs/media/screen_3.png)
+
 ## Default ports
 
 | Port | Service |
@@ -55,6 +73,18 @@ npm --prefix web run dev      # Vite + HMR, proxies /api → :8080
 npm --prefix web run lint
 npm --prefix web run build
 ```
+
+## Translations
+
+Web UI is available in English (`en`, source) and Russian (`ru`). Locale files live in `web/src/i18n/locales/*.json` (i18next, nested JSON).
+
+Translations are managed on Weblate: **https://weblate.traineratwot.site/projects/rustcache/**
+
+- Component: [`rustcache/web-ui`](https://weblate.traineratwot.site/projects/rustcache/web-ui/)
+- Source strings: `web/src/i18n/locales/en.json`
+- Add a language or fix a string in the Weblate UI — no need to open a PR for pure translation changes
+
+[![Translation status](https://weblate.traineratwot.site/widgets/rustcache/-/web-ui/multi-auto.svg)](https://weblate.traineratwot.site/engage/rustcache/)
 
 ## Layout
 
