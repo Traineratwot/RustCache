@@ -32,19 +32,19 @@ Honest feature matrix against common alternatives. `Yes` / `Partial` / `No`.
 | Mem + disk cache, stale-while-revalidate | Yes | Yes | Yes | No | No |
 | Config from Web UI + hot reload | Yes | No | No | Partial | Partial |
 
-1) [^1]: nginx `proxy_cache` is a reverse-proxy cache; forward-proxy mode needs extra modules and is not the primary use case.
-1) [^2]: Squid `ssl_bump` can MITM HTTPS and cache decrypted bodies, but requires an OpenSSL build, certificate plumbing, and careful ACL setup.
-1) [^3]: mitmproxy intercepts and rewrites traffic for debugging/security work; it is not a production HTTP cache.
-1) [^4]: HTTP CONNECT passthrough in nginx needs third-party modules (e.g. `ngx_http_proxy_connect_module`).
-1) [^5]: mitmproxy can talk to SOCKS upstreams and has reverse/upstream modes; it is not a general-purpose SOCKS5 server.
-1) [^6]: Privoxy is primarily an HTTP filtering proxy; SOCKS is used on the parent-proxy chain, not as a first-class server mode.
-1) [^7]: Squid ships `cachemgr.cgi` and access logs; a full analytics SPA is external (Lightsquid, sarg, etc.).
-1) [^8]: mitmproxy has a web UI for inspecting flows, not for operating a shared cache.
-1) [^9]: File-based access logs are standard; live hit-rate dashboards are not built in (except RustCache and mitmproxy's flow UI).
-1) [^10]: RustCache exclusions are domain globs + CIDR bypass lists, not a general ACL language (no regex actions, time-based rules, or user groups).
-1) [^11]: Privoxy can chain to a parent proxy; there is no ICP/HTCP cache mesh.
-1) [^12]: Filtering/rewriting via scripts or actions, not the ICAP/eCAP protocol.
-1) [^13]: mitmproxy has a reverse-proxy mode for local development, not origin acceleration at scale.
+[^1]: nginx `proxy_cache` is a reverse-proxy cache; forward-proxy mode needs extra modules and is not the primary use case.
+[^2]: Squid `ssl_bump` can MITM HTTPS and cache decrypted bodies, but requires an OpenSSL build, certificate plumbing, and careful ACL setup.
+[^3]: mitmproxy intercepts and rewrites traffic for debugging/security work; it is not a production HTTP cache.
+[^4]: HTTP CONNECT passthrough in nginx needs third-party modules (e.g. `ngx_http_proxy_connect_module`).
+[^5]: mitmproxy can talk to SOCKS upstreams and has reverse/upstream modes; it is not a general-purpose SOCKS5 server.
+[^6]: Privoxy is primarily an HTTP filtering proxy; SOCKS is used on the parent-proxy chain, not as a first-class server mode.
+[^7]: Squid ships `cachemgr.cgi` and access logs; a full analytics SPA is external (Lightsquid, sarg, etc.).
+[^8]: mitmproxy has a web UI for inspecting flows, not for operating a shared cache.
+[^9]: File-based access logs are standard; live hit-rate dashboards are not built in (except RustCache and mitmproxy's flow UI).
+[^10]: RustCache exclusions are domain globs + CIDR bypass lists, not a general ACL language (no regex actions, time-based rules, or user groups).
+[^11]: Privoxy can chain to a parent proxy; there is no ICP/HTCP cache mesh.
+[^12]: Filtering/rewriting via scripts or actions, not the ICAP/eCAP protocol.
+[^13]: mitmproxy has a reverse-proxy mode for local development, not origin acceleration at scale.
 
 **Honest limitations of RustCache today**
 
