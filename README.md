@@ -2,6 +2,18 @@
 
 Caching HTTP/HTTPS proxy (MITM + disk/mem cache) with a SOCKS5 tunnel and a local REST API + Web UI.
 
+## Purpose
+
+RustCache is built to **speed up everyday internet use** and **optimize external requests**:
+
+- **Acceleration** — repeated resources (static assets, API responses, downloads) are served from local memory/disk cache instead of the network, so pages and tools respond faster.
+- **Fewer outbound requests** — identical hits never leave the machine: less bandwidth, lower latency, and less load on remote APIs and CDNs.
+- **HTTPS included** — with a local root CA the proxy can cache HTTPS bodies too, not just plain HTTP.
+- **Works behind the scenes** — point a browser, curl, package manager, or any HTTP client at the proxy (or use PAC/WPAD for the LAN); caching policy follows HTTP semantics (`Cache-Control`, ETag, `stale-while-revalidate`).
+- **Observable** — request log and hit-rate metrics show what was cached and how much traffic was saved.
+
+Typical use cases: slow or metered links, repeated CI / package / API fetches, local development against remote services, and a shared cache for a home or office network.
+
 ## Features
 
 - **HTTP proxy** on `:3128` — absolute-form GET/HEAD served from cache (mem → disk), miss/revalidate via origin
