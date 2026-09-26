@@ -5,10 +5,10 @@ Maintainer: Traineratwot <Traineratwot@users.noreply.github.com>
 Installed-Size: 14220
 Depends: libc6, libgcc-s1
 Filename: pool/rustcache_0.1.0_amd64.deb
-Size: 4382664
-MD5sum: 8030def1f11f9f5cb6654f9dd051ee7e
-SHA1: 482a55399978d2505673f9ccd7fa27f257e78dfe
-SHA256: 31ad8ad9f4c9fcb5eba1e8c6a5d74a141cd69c22cff37f84926674d5f5a5b7d4
+Size: 4378776
+MD5sum: 2029cb20dbda14e327fd7f677febfa5b
+SHA1: ba89d64a50b54e01412b2807309fb626a735f179
+SHA256: d8ea5313d74284d8b984f16de7b0549f39ca84f059b7efcd1d51e711ce5d23a2
 Section: net
 Priority: optional
 Homepage: https://github.com/Traineratwot/RustCache
@@ -23,13 +23,13 @@ Package: rustcache
 Version: 0.1.0
 Architecture: arm64
 Maintainer: Traineratwot <Traineratwot@users.noreply.github.com>
-Installed-Size: 13824
+Installed-Size: 13804
 Depends: libc6, libgcc-s1
 Filename: pool/rustcache_0.1.0_arm64.deb
-Size: 4283834
-MD5sum: 91539c1d5be047af26bd8f9996432421
-SHA1: 6e2cac5fe5c07e95d3aaac93e8ff2cfd6c3c3a0a
-SHA256: 02990810b2921852660d7cddfca37692ede9f2f53a058265bb330ff55dc471a6
+Size: 4296140
+MD5sum: a550f7b0d41796e08cb9bf95431866c5
+SHA1: 426fc355e7cfb52734537c8a5ca285066e5b13c4
+SHA256: fa1acf4c18b47da50625d53a9b017a80254af75588a32ba36032dc7ef6a01792
 Section: net
 Priority: optional
 Homepage: https://github.com/Traineratwot/RustCache
