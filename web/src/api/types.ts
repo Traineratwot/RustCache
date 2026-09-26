@@ -1,14 +1,42 @@
-export interface Stats {
+export interface OutcomeStat {
+  outcome: string;
+  count: number;
+  bytes: number;
+  avg_duration_ms: number;
+}
+
+export interface HostStat {
+  host: string;
+  count: number;
+  bytes: number;
   hits: number;
-  misses: number;
-  revalidations: number;
-  bypasses: number;
+  hit_rate: number;
+}
+
+export interface SeriesPoint {
+  ts: number;
+  count: number;
+  hits: number;
+  miss_like: number;
+  bytes: number;
+}
+
+export interface LogStats {
+  since_ms: number;
+  until_ms: number;
+  total: number;
+  hits: number;
+  miss_like: number;
+  hit_rate: number;
   bytes_served: number;
   bytes_saved: number;
-  errors: number;
-  tunnels: number;
-  hit_rate: number;
   saved_mb: number;
+  avg_duration_ms: number;
+  max_duration_ms: number;
+  bucket_ms: number;
+  by_outcome: OutcomeStat[];
+  top_hosts: HostStat[];
+  series: SeriesPoint[];
 }
 
 export interface ReqRecord {

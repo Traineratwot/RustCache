@@ -11,6 +11,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "chart.js": "^4.5.1",
     "primeflex": "^4.0.0",
     "primeicons": "^8.0.2",
     "primereact": "^10.9.9",

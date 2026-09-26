@@ -21,6 +21,7 @@ pub fn router(state: ApiState) -> Router {
             "/api/logs/settings",
             get(get_log_settings).put(put_log_settings),
         )
+        .route("/api/logs/stats", get(log_stats))
         .route("/api/config", get(get_config))
         .route("/api/config/reload", post(reload_config))
         .route(
@@ -138,6 +139,27 @@ async fn requests(State(st): State<ApiState>, Query(q): Query<RequestsQuery>) ->
 async fn clear_requests(State(st): State<ApiState>) -> Response {
     match st.engine.logs.clear().await {
         Ok(deleted) => Json(json!({"ok": true, "deleted": deleted})).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct LogStatsQueryParams {
+    since: Option<u64>,
+    until: Option<u64>,
+}
+
+async fn log_stats(State(st): State<ApiState>, Query(q): Query<LogStatsQueryParams>) -> Response {
+    let query = rustcache_core::stats::LogStatsQuery {
+        since_ms: q.since,
+        until_ms: q.until,
+    };
+    match st.engine.logs.stats(query).await {
+        Ok(s) => Json(serde_json::to_value(s).unwrap_or(json!({}))).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": e.to_string()})),

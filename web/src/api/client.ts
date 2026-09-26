@@ -3,12 +3,12 @@ import type {
   Config,
   HealthInfo,
   LogSettings,
+  LogStats,
   Matcher,
   NetInfo,
   PacInfo,
   RequestPage,
   RequestQuery,
-  Stats,
 } from "./types";
 
 async function getJson<T>(url: string): Promise<T> {
@@ -27,8 +27,12 @@ async function sendJson<T>(url: string, method: string, body?: unknown): Promise
   return r.json();
 }
 
-export function getStats(): Promise<Stats> {
-  return getJson("/api/stats");
+export function getLogStats(query: { since?: number; until?: number } = {}): Promise<LogStats> {
+  const p = new URLSearchParams();
+  if (query.since !== undefined) p.set("since", String(query.since));
+  if (query.until !== undefined) p.set("until", String(query.until));
+  const qs = p.toString();
+  return getJson(qs ? `/api/logs/stats?${qs}` : "/api/logs/stats");
 }
 
 export function getHealth(): Promise<HealthInfo> {

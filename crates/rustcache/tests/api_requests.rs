@@ -244,3 +244,99 @@ async fn log_settings_rejects_out_of_range() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn log_stats_shape() {
+    install_crypto();
+    let (state, _dir) = make_state().await;
+    seed(&state).await;
+
+    let (status, v) = json_get(state.clone(), "/api/logs/stats").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(v["total"], 3);
+    assert!(v["hits"].is_number());
+    assert!(v["miss_like"].is_number());
+    assert!(v["hit_rate"].is_number());
+    assert!(v["bytes_served"].is_number());
+    assert!(v["bytes_saved"].is_number());
+    assert!(v["avg_duration_ms"].is_number());
+    assert!(v["max_duration_ms"].is_number());
+    assert!(v["bucket_ms"].is_number());
+    assert!(v["by_outcome"].is_array());
+    assert!(v["top_hosts"].is_array());
+    assert!(v["series"].is_array());
+
+    let by = v["by_outcome"].as_array().unwrap();
+    assert_eq!(by.len(), 8);
+    let hit = by.iter().find(|r| r["outcome"] == "HIT").unwrap();
+    assert_eq!(hit["count"], 1);
+    let miss = by.iter().find(|r| r["outcome"] == "MISS").unwrap();
+    assert_eq!(miss["count"], 1);
+    let err = by.iter().find(|r| r["outcome"] == "ERROR").unwrap();
+    assert_eq!(err["count"], 1);
+}
+
+#[tokio::test]
+async fn log_stats_empty_db() {
+    install_crypto();
+    let (state, _dir) = make_state().await;
+
+    let (status, v) = json_get(state.clone(), "/api/logs/stats").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(v["total"], 0);
+    assert_eq!(v["hit_rate"], 0.0);
+    assert_eq!(v["by_outcome"].as_array().unwrap().len(), 8);
+    assert!(v["top_hosts"].as_array().unwrap().is_empty());
+    assert!(v["series"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn log_stats_since_until() {
+    install_crypto();
+    let (state, _dir) = make_state().await;
+    seed(&state).await;
+
+    let (_, v) = json_get(state.clone(), "/api/logs/stats?since=2000&until=2000").await;
+    assert_eq!(v["total"], 1);
+    assert_eq!(v["since_ms"], 2000);
+    assert_eq!(v["until_ms"], 2000);
+}
+
+#[tokio::test]
+async fn log_stats_hit_rate_bytes() {
+    install_crypto();
+    let (state, _dir) = make_state().await;
+
+    let mut hits = ReqRecord {
+        ts: 1000,
+        method: "GET".into(),
+        url: "http://a/".into(),
+        host: "a".into(),
+        status: 200,
+        outcome: "HIT".into(),
+        duration_ms: 10,
+        resp_bytes: 100,
+    };
+    state.engine.record(hits.clone());
+    hits.outcome = "HIT_REVALIDATED".into();
+    hits.resp_bytes = 200;
+    hits.ts = 2000;
+    state.engine.record(hits.clone());
+    hits.outcome = "MISS".into();
+    hits.resp_bytes = 400;
+    hits.ts = 3000;
+    state.engine.record(hits.clone());
+    hits.outcome = "REVALIDATED".into();
+    hits.resp_bytes = 800;
+    hits.ts = 4000;
+    state.engine.record(hits);
+    state.engine.logs.flush().await.expect("flush");
+
+    let (_, v) = json_get(state.clone(), "/api/logs/stats").await;
+    assert_eq!(v["total"], 4);
+    assert_eq!(v["hits"], 2);
+    assert_eq!(v["miss_like"], 2);
+    assert!((v["hit_rate"].as_f64().unwrap() - 0.5).abs() < 1e-9);
+    assert_eq!(v["bytes_saved"], 300);
+    assert_eq!(v["bytes_served"], 1500);
+}

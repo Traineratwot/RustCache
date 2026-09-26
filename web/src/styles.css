@@ -78,6 +78,18 @@ body {
   font-weight: 700;
 }
 
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.page-header .page-title {
+  margin: 0;
+}
+
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -113,4 +125,46 @@ body {
 
 .mt-3 {
   margin-top: 1.5rem;
+}
+
+.chart-wrap {
+  position: relative;
+  height: 280px;
+}
+
+.chart-caption {
+  margin: 0.75rem 0 0;
+  font-size: 0.85rem;
+  color: var(--text-color-secondary);
+}
+
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.outcome-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.outcome-table th {
+  text-align: left;
+  color: var(--text-color-secondary);
+  font-weight: 600;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--surface-border);
+}
+
+.outcome-table td {
+  padding: 0.45rem 0.5rem;
+  border-bottom: 1px solid var(--surface-border);
+}
+
+@media (max-width: 900px) {
+  .two-col {
+    grid-template-columns: 1fr;
+  }
 }
