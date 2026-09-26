@@ -1,4 +1,4 @@
-import { Button } from "primereact/button";
+import { Dropdown } from "primereact/dropdown";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { NavLink } from "react-router-dom";
@@ -21,28 +21,21 @@ const navKeys: {
   { to: "/ca", icon: "pi pi-shield", key: "ca" },
 ];
 
-const themeCycle: ThemeMode[] = ["auto", "light", "dark"];
-const langCycle: LangMode[] = ["auto", "ru", "en"];
-
 export default function Layout({ children }: { children: ReactNode }) {
   const { t } = useTranslation();
-  const { themeMode, resolvedTheme, setThemeMode, langMode, resolvedLang, setLangMode } =
-    usePrefs();
+  const { themeMode, setThemeMode, langMode, resolvedLang, setLangMode } = usePrefs();
 
-  const nextTheme = themeCycle[(themeCycle.indexOf(themeMode) + 1) % themeCycle.length];
-  const nextLang = langCycle[(langCycle.indexOf(langMode) + 1) % langCycle.length];
+  const themeOptions = [
+    { value: "auto" as ThemeMode, label: t("ui.theme.auto"), icon: "pi pi-circle" },
+    { value: "light" as ThemeMode, label: t("ui.theme.light"), icon: "pi pi-sun" },
+    { value: "dark" as ThemeMode, label: t("ui.theme.dark"), icon: "pi pi-moon" },
+  ];
 
-  const themeIcon =
-    themeMode === "auto" ? "pi pi-circle" : resolvedTheme === "dark" ? "pi pi-moon" : "pi pi-sun";
-
-  const themeLabel =
-    themeMode === "auto"
-      ? t("ui.theme.auto")
-      : themeMode === "dark"
-        ? t("ui.theme.dark")
-        : t("ui.theme.light");
-
-  const langLabel = langMode === "auto" ? t("ui.lang.auto") : langMode === "ru" ? "RU" : "EN";
+  const langOptions = [
+    { value: "auto" as LangMode, label: `${t("ui.lang.auto")} (${resolvedLang})` },
+    { value: "ru" as LangMode, label: t("ui.lang.ru") },
+    { value: "en" as LangMode, label: t("ui.lang.en") },
+  ];
 
   return (
     <div className="app-shell">
@@ -60,30 +53,48 @@ export default function Layout({ children }: { children: ReactNode }) {
           ))}
         </nav>
         <div className="app-sidebar-footer">
-          <Button
-            icon={themeIcon}
-            text
-            size="small"
-            tooltip={t("ui.theme.toggle")}
+          <Dropdown
+            value={themeMode}
+            options={themeOptions}
+            optionLabel="label"
+            optionValue="value"
+            onChange={(e) => setThemeMode(e.value as ThemeMode)}
+            className="app-side-dd"
+            panelClassName="app-side-dd-panel"
+            tooltip={t("ui.theme.label")}
             tooltipOptions={{ position: "top" }}
-            aria-label={t("ui.theme.toggle")}
-            onClick={() => setThemeMode(nextTheme)}
-            className="app-side-btn"
+            itemTemplate={(opt) => (
+              <span className="flex align-items-center gap-2">
+                <i className={opt.icon} />
+                {opt.label}
+              </span>
+            )}
+            valueTemplate={(opt) => (
+              <span className="flex align-items-center gap-2">
+                <i
+                  className={
+                    opt?.value === "auto"
+                      ? "pi pi-circle"
+                      : opt?.value === "dark"
+                        ? "pi pi-moon"
+                        : "pi pi-sun"
+                  }
+                />
+                {opt?.label ?? t("ui.theme.label")}
+              </span>
+            )}
           />
-          <span className="app-side-label" title={themeLabel}>
-            {themeLabel}
-          </span>
-          <Button
-            label={langLabel}
-            text
-            size="small"
-            tooltip={t("ui.lang.toggle")}
+          <Dropdown
+            value={langMode}
+            options={langOptions}
+            optionLabel="label"
+            optionValue="value"
+            onChange={(e) => setLangMode(e.value as LangMode)}
+            className="app-side-dd"
+            panelClassName="app-side-dd-panel"
+            tooltip={t("ui.lang.label")}
             tooltipOptions={{ position: "top" }}
-            aria-label={t("ui.lang.toggle")}
-            onClick={() => setLangMode(nextLang)}
-            className="app-side-btn"
           />
-          <span className="app-side-label">{langMode === "auto" ? `(${resolvedLang})` : ""}</span>
         </div>
       </aside>
       <main className="app-main">{children}</main>

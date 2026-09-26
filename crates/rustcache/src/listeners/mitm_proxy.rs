@@ -25,12 +25,13 @@ pub struct MitmState {
     pub denylist: Arc<dashmap::DashMap<String, u64>>,
 }
 
+/// Accept loop on a pre-bound listener (bind happens in `main` so failures are visible).
 pub async fn serve(
-    addr: std::net::SocketAddr,
+    listener: TcpListener,
     engine: SharedEngine,
     leaves: Arc<LeafIssuer>,
 ) -> anyhow::Result<()> {
-    let listener = TcpListener::bind(addr).await?;
+    let addr = listener.local_addr()?;
     tracing::info!(%addr, "https mitm listening");
     let denylist = Arc::new(dashmap::DashMap::new());
     loop {
@@ -204,7 +205,7 @@ async fn handle_mitm_request<W: AsyncWriteExt + Unpin + tokio::io::AsyncRead>(
                     Some(req.body.as_slice())
                 },
                 Some(tls),
-                engine.max_object_bytes,
+                engine.max_object_bytes(),
             )
             .await
         {

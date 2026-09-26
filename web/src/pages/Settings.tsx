@@ -1,63 +1,131 @@
 import { Button } from "primereact/button";
 import { Card } from "primereact/card";
+import { ConfirmDialog, confirmDialog } from "primereact/confirmdialog";
+import { Dropdown } from "primereact/dropdown";
 import { InputNumber } from "primereact/inputnumber";
+import { InputSwitch } from "primereact/inputswitch";
+import { InputText } from "primereact/inputtext";
 import { Message } from "primereact/message";
-import { RadioButton } from "primereact/radiobutton";
 import { Toast } from "primereact/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { getConfig, reloadConfig, updateLogSettings } from "../api/client";
-import type { Config, LogSettings } from "../api/types";
-import { fmtMb } from "../lib/format";
-import { usePrefs } from "../prefs/PrefsContext";
-import type { LangMode, ThemeMode } from "../prefs/storage";
+import { getConfig, getHealth, reloadConfig, restartProcess, updateConfig } from "../api/client";
+import type { Config, PacMode } from "../api/types";
 
-function Row({ label, value }: { label: string; value: string | number }) {
+type Form = Config;
+type ApplyMode = "hot" | "restart";
+
+function ApplyBadge({ mode }: { mode: ApplyMode }) {
+  const { t } = useTranslation();
+  const isRestart = mode === "restart";
   return (
-    <div className="flex justify-content-between align-items-center py-2 border-bottom-1 surface-border">
-      <span className="text-color-secondary">{label}</span>
-      <code style={{ fontSize: "0.95rem" }}>{value}</code>
-    </div>
+    <span
+      className={`apply-badge ${isRestart ? "apply-restart" : "apply-hot"}`}
+      title={isRestart ? t("settings.applyRestartTitle") : t("settings.applyHotTitle")}
+    >
+      <i className={isRestart ? "pi pi-refresh" : "pi pi-bolt"} />
+      {isRestart ? t("settings.applyRestart") : t("settings.applyHot")}
+    </span>
   );
 }
 
-const themeOptions: { key: ThemeMode; labelKey: string }[] = [
-  { key: "auto", labelKey: "ui.theme.auto" },
-  { key: "light", labelKey: "ui.theme.light" },
-  { key: "dark", labelKey: "ui.theme.dark" },
+function Field({
+  label,
+  hint,
+  apply,
+  error,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  apply?: ApplyMode;
+  error?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    // biome-ignore lint/a11y/noLabelWithoutControl: label wraps the PrimeReact control
+    <label className={`flex flex-column gap-1 mb-3${error ? " field-has-error" : ""}`}>
+      <span className="field-label-row">
+        <span className="text-color-secondary">{label}</span>
+        {apply ? <ApplyBadge mode={apply} /> : null}
+      </span>
+      {children}
+      {error ? (
+        <small className="field-error" style={{ lineHeight: 1.35 }}>
+          {error}
+        </small>
+      ) : hint ? (
+        <small className="text-color-secondary" style={{ lineHeight: 1.35 }}>
+          {hint}
+        </small>
+      ) : null}
+    </label>
+  );
+}
+
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return <h3 style={{ marginTop: 0, marginBottom: "0.75rem", fontSize: "1.05rem" }}>{children}</h3>;
+}
+
+/**
+ * Mirror of Rust `resolve_under`: relative → under data_dir, absolute/~/ → as-is.
+ * Display only; the backend resolves the real paths.
+ */
+function resolveUnder(dataDir: string, p: string): string {
+  const s = p.trim();
+  if (s.startsWith("/") || s.startsWith("~")) return s;
+  const base = dataDir.replace(/\/+$/, "");
+  return `${base}/${s}`;
+}
+
+function isAbsolutePath(p: string): boolean {
+  const s = p.trim();
+  return s.startsWith("/") || s.startsWith("~");
+}
+
+function PathResolved({ dataDir, value }: { dataDir: string; value: string }) {
+  const { t } = useTranslation();
+  return (
+    <span className="path-resolved">
+      <span className="tag">
+        {isAbsolutePath(value) ? t("settings.pathAbsolute") : t("settings.pathRelative")}
+      </span>
+      <code>{resolveUnder(dataDir, value)}</code>
+    </span>
+  );
+}
+
+const PAC_MODES: { labelKey: string; value: PacMode }[] = [
+  { labelKey: "settings.pacModeHttp", value: "http" },
+  { labelKey: "settings.pacModeSocks", value: "socks" },
+  { labelKey: "settings.pacModeBoth", value: "http+socks" },
 ];
 
-const langOptions: { key: LangMode; labelKey: string }[] = [
-  { key: "auto", labelKey: "ui.lang.auto" },
-  { key: "ru", labelKey: "ui.lang.ru" },
-  { key: "en", labelKey: "ui.lang.en" },
-];
+function cloneForm(c: Form): Form {
+  return JSON.parse(JSON.stringify(c)) as Form;
+}
 
 export default function Settings() {
   const { t } = useTranslation();
-  const { langMode, setLangMode, themeMode, setThemeMode } = usePrefs();
-  const [cfg, setCfg] = useState<Config | null>(null);
+  const [form, setForm] = useState<Form | null>(null);
+  const [original, setOriginal] = useState<Form | null>(null);
   const [busy, setBusy] = useState(false);
   const [saveBusy, setSaveBusy] = useState(false);
+  const [restartBusy, setRestartBusy] = useState(false);
   const [reloadMsg, setReloadMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const [logForm, setLogForm] = useState<LogSettings>({
-    max_rows: 10000,
-    max_age_days: 7,
-    cleanup_interval_secs: 300,
-  });
+  const [restartFields, setRestartFields] = useState<string[]>([]);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const toast = useRef<Toast>(null);
+
+  const dirty =
+    form !== null && original !== null && JSON.stringify(form) !== JSON.stringify(original);
 
   const load = useCallback(async () => {
     try {
       const c = await getConfig();
-      setCfg(c);
-      if (c.logs) {
-        setLogForm({
-          max_rows: c.logs.max_rows,
-          max_age_days: c.logs.max_age_days,
-          cleanup_interval_secs: c.logs.cleanup_interval_secs,
-        });
-      }
+      setForm(c);
+      setOriginal(cloneForm(c));
+      setFieldErrors({});
     } catch {
       toast.current?.show({
         severity: "error",
@@ -71,6 +139,11 @@ export default function Settings() {
     load();
   }, [load]);
 
+  const patch = (fn: (f: Form) => Form) => {
+    setFieldErrors({});
+    setForm((prev) => (prev ? fn(prev) : prev));
+  };
+
   const handleReload = async () => {
     setBusy(true);
     try {
@@ -82,8 +155,12 @@ export default function Settings() {
           summary: t("common.done"),
           detail: t("settings.reloaded"),
         });
-        if (r.config) setCfg(r.config);
-        else await load();
+        if (r.config) {
+          setForm(r.config);
+          setOriginal(cloneForm(r.config));
+        } else {
+          await load();
+        }
       } else {
         setReloadMsg({ ok: false, text: r.error ?? t("settings.reloadError") });
       }
@@ -94,196 +171,483 @@ export default function Settings() {
     }
   };
 
-  const handleSaveLogs = async () => {
+  const handleSave = async () => {
+    if (!form) return;
     setSaveBusy(true);
+    setFieldErrors({});
     try {
-      const r = await updateLogSettings(logForm);
-      if (r.ok) {
-        setLogForm(r.settings);
-        toast.current?.show({
-          severity: "success",
-          summary: t("common.done"),
-          detail: t("settings.logsSaved"),
-        });
+      const r = await updateConfig(form);
+      if (r.ok && r.config) {
+        setForm(r.config);
+        setOriginal(cloneForm(r.config));
+        setRestartFields(r.restart_fields ?? []);
+        setFieldErrors({});
+        if (r.restart_required) {
+          toast.current?.show({
+            severity: "warn",
+            summary: t("common.warning"),
+            detail: t("settings.savedRestart", {
+              fields: (r.restart_fields ?? []).join(", "),
+            }),
+            life: 8000,
+          });
+        } else {
+          toast.current?.show({
+            severity: "success",
+            summary: t("common.done"),
+            detail: t("settings.saved"),
+          });
+        }
       } else {
+        const map: Record<string, string> = {};
+        for (const e of r.errors ?? []) map[e.field] = e.message;
+        setFieldErrors(map);
         toast.current?.show({
           severity: "error",
           summary: t("common.error"),
-          detail: t("settings.logsSaveError"),
+          detail: r.error ?? t("settings.saveError"),
+          life: 8000,
         });
       }
     } catch {
       toast.current?.show({
         severity: "error",
         summary: t("common.error"),
-        detail: t("settings.logsSaveError2"),
+        detail: t("settings.saveError2"),
       });
     } finally {
       setSaveBusy(false);
     }
   };
 
+  const waitUntilUp = useCallback(async () => {
+    for (let i = 0; i < 30; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      try {
+        await getHealth();
+        toast.current?.show({
+          severity: "success",
+          summary: t("common.done"),
+          detail: t("settings.restarted"),
+        });
+        setRestartFields([]);
+        await load();
+        return;
+      } catch {
+        // still down
+      }
+    }
+    toast.current?.show({
+      severity: "error",
+      summary: t("common.error"),
+      detail: t("settings.restartError"),
+      life: 8000,
+    });
+  }, [load, t]);
+
+  const handleRestart = useCallback(async () => {
+    setRestartBusy(true);
+    try {
+      await restartProcess();
+      toast.current?.show({
+        severity: "info",
+        summary: t("settings.restarting"),
+        life: 4000,
+      });
+    } catch {
+      // The process may exit before the response is delivered.
+      toast.current?.show({
+        severity: "info",
+        summary: t("settings.restarting"),
+        life: 4000,
+      });
+    }
+    await waitUntilUp();
+    setRestartBusy(false);
+  }, [t, waitUntilUp]);
+
+  const handleRestartClick = () => {
+    confirmDialog({
+      message: t("settings.restartConfirm"),
+      header: t("settings.restartTitle"),
+      icon: "pi pi-exclamation-triangle",
+      acceptLabel: t("settings.restartAccept"),
+      rejectLabel: t("common.cancel"),
+      accept: handleRestart,
+    });
+  };
+
+  if (!form) {
+    return (
+      <>
+        <Toast ref={toast} />
+        <h1 className="page-title">{t("settings.title")}</h1>
+        <p>{t("common.loading")}</p>
+      </>
+    );
+  }
+
   return (
     <>
       <Toast ref={toast} />
+      <ConfirmDialog />
       <h1 className="page-title">{t("settings.title")}</h1>
       <Message severity="info" text={t("settings.intro")} className="mb-3 w-full" />
 
-      {!cfg ? (
-        <p>{t("common.loading")}</p>
-      ) : (
-        <div className="grid">
-          <div className="col-12 md:col-6">
-            <Card title={t("ui.section")}>
-              <div className="flex flex-column gap-3">
-                <div>
-                  <div className="text-color-secondary mb-2">{t("ui.lang.label")}</div>
-                  <div className="flex flex-wrap gap-3">
-                    {langOptions.map((o) => (
-                      <div key={o.key} className="flex align-items-center gap-2">
-                        <RadioButton
-                          inputId={`lang-${o.key}`}
-                          name="lang"
-                          value={o.key}
-                          onChange={() => setLangMode(o.key)}
-                          checked={langMode === o.key}
-                        />
-                        <label htmlFor={`lang-${o.key}`}>{t(o.labelKey)}</label>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-color-secondary mb-2">{t("ui.theme.label")}</div>
-                  <div className="flex flex-wrap gap-3">
-                    {themeOptions.map((o) => (
-                      <div key={o.key} className="flex align-items-center gap-2">
-                        <RadioButton
-                          inputId={`theme-${o.key}`}
-                          name="theme"
-                          value={o.key}
-                          onChange={() => setThemeMode(o.key)}
-                          checked={themeMode === o.key}
-                        />
-                        <label htmlFor={`theme-${o.key}`}>{t(o.labelKey)}</label>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </Card>
-          </div>
-          <div className="col-12 md:col-6">
-            <Card title={t("settings.listeners")}>
-              <Row label={t("settings.httpProxy")} value={cfg.http.port} />
-              <Row label={t("settings.httpsMitm")} value={cfg.https.port} />
-              <Row label={t("settings.socks5")} value={cfg.socks5.port} />
-              <Row label={t("settings.apiBind")} value={cfg.api.bind} />
-            </Card>
-          </div>
-          <div className="col-12 md:col-6">
-            <Card title={t("settings.paths")}>
-              <Row label={t("settings.dataDir")} value={cfg.data_dir} />
-              <Row label={t("settings.cacheDir")} value={cfg.cache.dir} />
-              <Row label={t("settings.caDir")} value={cfg.ca.dir} />
-              <Row label={t("settings.logDb")} value={cfg.logs.db_path} />
-              <p className="text-color-secondary" style={{ marginBottom: 0, fontSize: "0.9rem" }}>
-                {t("settings.pathsHint")}
-              </p>
-            </Card>
-          </div>
-          <div className="col-12 md:col-6">
-            <Card title={t("settings.cacheSection")}>
-              <Row label={t("settings.dir")} value={cfg.cache.dir} />
-              <Row label={t("settings.maxSize")} value={fmtMb(cfg.cache.max_bytes)} />
-              <Row label={t("settings.maxObject")} value={fmtMb(cfg.cache.max_object_bytes)} />
-            </Card>
-          </div>
-          <div className="col-12 md:col-6">
-            <Card title={t("settings.caSection")}>
-              <Row label={t("settings.dir")} value={cfg.ca.dir} />
-            </Card>
-          </div>
-          <div className="col-12 md:col-6">
-            <Card title={t("settings.hotReload")}>
-              <p style={{ marginTop: 0 }}>{t("settings.hotReloadDesc")}</p>
-              <Button
-                label={t("settings.reload")}
-                icon="pi pi-refresh"
-                loading={busy}
-                onClick={handleReload}
-              />
-              {reloadMsg && (
-                <Message
-                  severity={reloadMsg.ok ? "success" : "error"}
-                  text={reloadMsg.text}
-                  className="mt-2 w-full"
-                />
-              )}
-            </Card>
-          </div>
-          <div className="col-12 md:col-6">
-            <Card title={t("settings.logs")}>
-              <div className="flex flex-column gap-3">
-                <div className="flex flex-column gap-1">
-                  <label htmlFor="log-max-rows" className="text-color-secondary">
-                    {t("settings.maxRows")}
-                  </label>
-                  <InputNumber
-                    id="log-max-rows"
-                    value={logForm.max_rows}
-                    onValueChange={(e) =>
-                      setLogForm((f) => ({ ...f, max_rows: e.value ?? f.max_rows }))
-                    }
-                    min={1}
-                    max={10_000_000}
-                    showButtons
-                  />
-                </div>
-                <div className="flex flex-column gap-1">
-                  <label htmlFor="log-max-age" className="text-color-secondary">
-                    {t("settings.maxAge")}
-                  </label>
-                  <InputNumber
-                    id="log-max-age"
-                    value={logForm.max_age_days}
-                    onValueChange={(e) =>
-                      setLogForm((f) => ({ ...f, max_age_days: e.value ?? f.max_age_days }))
-                    }
-                    min={1}
-                    max={3650}
-                    showButtons
-                  />
-                </div>
-                <div className="flex flex-column gap-1">
-                  <label htmlFor="log-interval" className="text-color-secondary">
-                    {t("settings.cleanupInterval")}
-                  </label>
-                  <InputNumber
-                    id="log-interval"
-                    value={logForm.cleanup_interval_secs}
-                    onValueChange={(e) =>
-                      setLogForm((f) => ({
-                        ...f,
-                        cleanup_interval_secs: e.value ?? f.cleanup_interval_secs,
-                      }))
-                    }
-                    min={10}
-                    max={86400}
-                    showButtons
-                  />
-                </div>
-                <Button
-                  label={t("common.save")}
-                  icon="pi pi-save"
-                  loading={saveBusy}
-                  onClick={handleSaveLogs}
-                />
-              </div>
-            </Card>
-          </div>
-        </div>
+      {restartFields.length > 0 && (
+        <Message
+          severity="warn"
+          text={t("settings.restartBanner", { fields: restartFields.join(", ") })}
+          className="mb-3 w-full"
+        />
       )}
+
+      <div className="settings-grid">
+        {/* Listeners */}
+        <Card>
+          <SectionTitle>{t("settings.listeners")}</SectionTitle>
+          <Field
+            label={t("settings.httpProxy")}
+            hint={t("settings.httpProxyHint")}
+            apply="restart"
+            error={fieldErrors["http.port"]}
+          >
+            <InputNumber
+              value={form.http.port}
+              min={1}
+              max={65535}
+              showButtons
+              onValueChange={(e) =>
+                patch((f) => ({ ...f, http: { port: e.value ?? f.http.port } }))
+              }
+            />
+          </Field>
+          <Field
+            label={t("settings.httpsMitm")}
+            hint={t("settings.httpsMitmHint")}
+            apply="restart"
+            error={fieldErrors["https.port"]}
+          >
+            <InputNumber
+              value={form.https.port}
+              min={1}
+              max={65535}
+              showButtons
+              onValueChange={(e) =>
+                patch((f) => ({ ...f, https: { port: e.value ?? f.https.port } }))
+              }
+            />
+          </Field>
+          <Field
+            label={t("settings.socks5")}
+            hint={t("settings.socks5Hint")}
+            apply="restart"
+            error={fieldErrors["socks5.port"]}
+          >
+            <InputNumber
+              value={form.socks5.port}
+              min={1}
+              max={65535}
+              showButtons
+              onValueChange={(e) =>
+                patch((f) => ({ ...f, socks5: { port: e.value ?? f.socks5.port } }))
+              }
+            />
+          </Field>
+          <Field
+            label={t("settings.apiBind")}
+            hint={t("settings.apiBindHint")}
+            apply="restart"
+            error={fieldErrors["api.bind"]}
+          >
+            <InputText
+              value={form.api.bind}
+              className="w-full"
+              onChange={(e) => patch((f) => ({ ...f, api: { bind: e.target.value } }))}
+            />
+          </Field>
+        </Card>
+
+        {/* Cache limits */}
+        <Card>
+          <SectionTitle>{t("settings.cacheSection")}</SectionTitle>
+          <Field
+            label={t("settings.maxSize")}
+            hint={t("settings.maxSizeHint")}
+            apply="hot"
+            error={fieldErrors["cache.max_bytes"]}
+          >
+            <InputNumber
+              value={Math.round(form.cache.max_bytes / (1024 * 1024))}
+              min={1}
+              max={1_048_576}
+              suffix=" MB"
+              showButtons
+              onValueChange={(e) =>
+                patch((f) => ({
+                  ...f,
+                  cache: {
+                    ...f.cache,
+                    max_bytes: Math.max(1, e.value ?? 1) * 1024 * 1024,
+                  },
+                }))
+              }
+            />
+          </Field>
+          <Field
+            label={t("settings.maxObject")}
+            hint={t("settings.maxObjectHint")}
+            apply="hot"
+            error={fieldErrors["cache.max_object_bytes"]}
+          >
+            <InputNumber
+              value={Math.round(form.cache.max_object_bytes / (1024 * 1024))}
+              min={1}
+              max={1_048_576}
+              suffix=" MB"
+              showButtons
+              onValueChange={(e) =>
+                patch((f) => ({
+                  ...f,
+                  cache: {
+                    ...f.cache,
+                    max_object_bytes: Math.max(1, e.value ?? 1) * 1024 * 1024,
+                  },
+                }))
+              }
+            />
+          </Field>
+          <p className="text-color-secondary mb-0" style={{ fontSize: "0.85rem" }}>
+            {t("settings.cacheDirLabel")}: <code>{form.cache.dir}</code>
+            <PathResolved dataDir={form.data_dir} value={form.cache.dir} />
+          </p>
+        </Card>
+
+        {/* PAC */}
+        <Card>
+          <SectionTitle>{t("settings.pacSection")}</SectionTitle>
+          <Field
+            label={t("settings.pacEnabled")}
+            hint={t("settings.pacEnabledHint")}
+            apply="restart"
+            error={fieldErrors["pac.enabled"]}
+          >
+            <InputSwitch
+              checked={form.pac.enabled}
+              onChange={(e) => patch((f) => ({ ...f, pac: { ...f.pac, enabled: e.value } }))}
+            />
+          </Field>
+          <Field
+            label={t("settings.pacBind")}
+            hint={t("settings.pacBindHint")}
+            apply="restart"
+            error={fieldErrors["pac.bind"]}
+          >
+            <InputText
+              value={form.pac.bind}
+              className="w-full"
+              disabled={!form.pac.enabled}
+              onChange={(e) => patch((f) => ({ ...f, pac: { ...f.pac, bind: e.target.value } }))}
+            />
+          </Field>
+          <Field
+            label={t("settings.pacMode")}
+            hint={t("settings.pacModeHint")}
+            apply="hot"
+            error={fieldErrors["pac.mode"]}
+          >
+            <Dropdown
+              value={form.pac.mode}
+              options={PAC_MODES.map((m) => ({ label: t(m.labelKey), value: m.value }))}
+              onChange={(e) => patch((f) => ({ ...f, pac: { ...f.pac, mode: e.value } }))}
+              className="w-full"
+              disabled={!form.pac.enabled}
+            />
+          </Field>
+        </Card>
+
+        {/* Request logs */}
+        <Card>
+          <SectionTitle>{t("settings.logs")}</SectionTitle>
+          <Field label={t("settings.maxRows")} apply="hot" error={fieldErrors["logs.max_rows"]}>
+            <InputNumber
+              value={form.logs.max_rows}
+              min={1}
+              max={10_000_000}
+              showButtons
+              onValueChange={(e) =>
+                patch((f) => ({
+                  ...f,
+                  logs: { ...f.logs, max_rows: e.value ?? f.logs.max_rows },
+                }))
+              }
+            />
+          </Field>
+          <Field label={t("settings.maxAge")} apply="hot" error={fieldErrors["logs.max_age_days"]}>
+            <InputNumber
+              value={form.logs.max_age_days}
+              min={1}
+              max={3650}
+              showButtons
+              onValueChange={(e) =>
+                patch((f) => ({
+                  ...f,
+                  logs: { ...f.logs, max_age_days: e.value ?? f.logs.max_age_days },
+                }))
+              }
+            />
+          </Field>
+          <Field
+            label={t("settings.cleanupInterval")}
+            apply="hot"
+            error={fieldErrors["logs.cleanup_interval_secs"]}
+          >
+            <InputNumber
+              value={form.logs.cleanup_interval_secs}
+              min={10}
+              max={86400}
+              showButtons
+              onValueChange={(e) =>
+                patch((f) => ({
+                  ...f,
+                  logs: {
+                    ...f.logs,
+                    cleanup_interval_secs: e.value ?? f.logs.cleanup_interval_secs,
+                  },
+                }))
+              }
+            />
+          </Field>
+          <p className="text-color-secondary mb-0" style={{ fontSize: "0.85rem" }}>
+            {t("settings.logDb")}: <code>{form.logs.db_path}</code>
+            <PathResolved dataDir={form.data_dir} value={form.logs.db_path} />
+          </p>
+        </Card>
+
+        {/* Paths: data_dir is the single root; the rest are sub-paths under it */}
+        <Card>
+          <SectionTitle>{t("settings.paths")}</SectionTitle>
+          <p className="text-color-secondary mt-0" style={{ fontSize: "0.85rem" }}>
+            {t("settings.pathsModel")}
+          </p>
+          <Field
+            label={t("settings.dataDir")}
+            hint={t("settings.dataDirHint")}
+            apply="restart"
+            error={fieldErrors.data_dir}
+          >
+            <InputText
+              value={form.data_dir}
+              className="w-full"
+              onChange={(e) => patch((f) => ({ ...f, data_dir: e.target.value }))}
+            />
+            <span className="path-resolved">
+              <span className="tag">{t("settings.pathRoot")}</span>
+              <code>{form.data_dir.trim() || "—"}</code>
+            </span>
+          </Field>
+
+          <div className="path-tree">
+            <Field
+              label={t("settings.cacheDir")}
+              hint={t("settings.cacheDirHint")}
+              apply="restart"
+              error={fieldErrors["cache.dir"]}
+            >
+              <InputText
+                value={form.cache.dir}
+                className="w-full"
+                onChange={(e) =>
+                  patch((f) => ({ ...f, cache: { ...f.cache, dir: e.target.value } }))
+                }
+              />
+              <PathResolved dataDir={form.data_dir} value={form.cache.dir} />
+            </Field>
+            <Field
+              label={t("settings.caDir")}
+              hint={t("settings.caDirHint")}
+              apply="restart"
+              error={fieldErrors["ca.dir"]}
+            >
+              <InputText
+                value={form.ca.dir}
+                className="w-full"
+                onChange={(e) => patch((f) => ({ ...f, ca: { dir: e.target.value } }))}
+              />
+              <PathResolved dataDir={form.data_dir} value={form.ca.dir} />
+            </Field>
+            <Field
+              label={t("settings.logDb")}
+              hint={t("settings.logDbHint")}
+              apply="restart"
+              error={fieldErrors["logs.db_path"]}
+            >
+              <InputText
+                value={form.logs.db_path}
+                className="w-full"
+                onChange={(e) =>
+                  patch((f) => ({ ...f, logs: { ...f.logs, db_path: e.target.value } }))
+                }
+              />
+              <PathResolved dataDir={form.data_dir} value={form.logs.db_path} />
+            </Field>
+          </div>
+
+          <p className="text-color-secondary mb-0" style={{ fontSize: "0.85rem" }}>
+            {t("settings.pathsHint")}
+          </p>
+        </Card>
+
+        {/* Actions */}
+        <Card>
+          <SectionTitle>{t("settings.actions")}</SectionTitle>
+          <p style={{ marginTop: 0 }}>{t("settings.actionsDesc")}</p>
+          <p className="text-color-secondary" style={{ fontSize: "0.85rem", marginTop: 0 }}>
+            {t("settings.applyLegend")}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              label={t("common.save")}
+              icon="pi pi-save"
+              disabled={!dirty}
+              loading={saveBusy}
+              onClick={handleSave}
+              tooltip={dirty ? undefined : t("settings.noChanges")}
+            />
+            <Button
+              label={t("settings.reload")}
+              icon="pi pi-refresh"
+              severity="secondary"
+              loading={busy}
+              onClick={handleReload}
+            />
+            <Button
+              label={t("common.cancel")}
+              icon="pi pi-undo"
+              severity="secondary"
+              text
+              disabled={!dirty}
+              onClick={() => load()}
+            />
+            <Button
+              label={t("settings.restartAccept")}
+              icon="pi pi-power-off"
+              severity="danger"
+              outlined
+              loading={restartBusy}
+              onClick={handleRestartClick}
+            />
+          </div>
+          {reloadMsg && (
+            <Message
+              severity={reloadMsg.ok ? "success" : "error"}
+              text={reloadMsg.text}
+              className="mt-2 w-full"
+            />
+          )}
+          <Message severity="info" text={t("settings.hotReloadDesc")} className="mt-2 w-full" />
+        </Card>
+      </div>
     </>
   );
 }

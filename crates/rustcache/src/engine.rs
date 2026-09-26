@@ -1,5 +1,6 @@
 //! Shared cache engine used by HTTP and MITM listeners.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use rustcache_core::cache::coalesce::Coalesce;
@@ -24,8 +25,10 @@ pub struct CacheEngine {
     pub logs: Arc<LogStore>,
     pub exclusions: RwLock<ExclusionSet>,
     pub fetcher: OriginFetcher,
-    pub max_object_bytes: u64,
-    pub max_bytes: u64,
+    /// Live-tunable: max response body stored (hot-reloaded from config).
+    max_object_bytes: AtomicU64,
+    /// Live-tunable: disk cache size cap (hot-reloaded from config).
+    max_bytes: AtomicU64,
     coalesce: Coalesce<OriginResponse>,
 }
 
@@ -51,10 +54,25 @@ impl CacheEngine {
             logs,
             exclusions: RwLock::new(exclusions),
             fetcher: OriginFetcher::default(),
-            max_object_bytes,
-            max_bytes,
+            max_object_bytes: AtomicU64::new(max_object_bytes),
+            max_bytes: AtomicU64::new(max_bytes),
             coalesce: Coalesce::new(),
         }
+    }
+
+    pub fn max_object_bytes(&self) -> u64 {
+        self.max_object_bytes.load(Ordering::Relaxed)
+    }
+
+    pub fn max_bytes(&self) -> u64 {
+        self.max_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Hot-apply cache size limits (config reload / API update).
+    pub fn set_cache_limits(&self, max_object_bytes: u64, max_bytes: u64) {
+        self.max_object_bytes
+            .store(max_object_bytes, Ordering::Relaxed);
+        self.max_bytes.store(max_bytes, Ordering::Relaxed);
     }
 
     pub async fn is_excluded_url(&self, url: &str) -> bool {
@@ -127,7 +145,7 @@ impl CacheEngine {
             }
         }
 
-        let max_object_bytes = self.max_object_bytes;
+        let max_object_bytes = self.max_object_bytes();
         // Do not coalesce authenticated fetches (per-user responses).
         let coalesce_key = if has_auth {
             format!("{key}:auth:{}", headers.len())
@@ -206,7 +224,7 @@ impl CacheEngine {
                     )
                     .await;
                 let _ = self.disk.store(entry.meta.clone(), &entry.body).await;
-                let _ = evict_lru(&self.disk, self.max_bytes).await;
+                let _ = evict_lru(&self.disk, self.max_bytes()).await;
             }
         }
         Ok(entry)

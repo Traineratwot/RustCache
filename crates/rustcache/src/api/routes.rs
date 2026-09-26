@@ -22,8 +22,9 @@ pub fn router(state: ApiState) -> Router {
             get(get_log_settings).put(put_log_settings),
         )
         .route("/api/logs/stats", get(log_stats))
-        .route("/api/config", get(get_config))
+        .route("/api/config", get(get_config).put(put_config))
         .route("/api/config/reload", post(reload_config))
+        .route("/api/config/restart", post(restart_process))
         .route(
             "/api/exclusions",
             get(list_exclusions)
@@ -51,10 +52,27 @@ async fn health(State(st): State<ApiState>) -> Json<Value> {
     let cfg = st.config.get().await;
     let uptime_s = st.started_at.elapsed().as_secs();
 
+    // Report actual bind success. A TCP probe cannot tell two services sharing
+    // a misconfigured port apart — both would show "running".
     let listeners = vec![
-        probe_listener("HTTP proxy", "0.0.0.0", cfg.http.port).await,
-        probe_listener("HTTPS MITM", "0.0.0.0", cfg.https.port).await,
-        probe_listener("SOCKS5", "0.0.0.0", cfg.socks5.port).await,
+        json!({
+            "name": "HTTP proxy",
+            "bind": "0.0.0.0",
+            "port": cfg.http.port,
+            "running": st.listeners.http(),
+        }),
+        json!({
+            "name": "HTTPS MITM",
+            "bind": "0.0.0.0",
+            "port": cfg.https.port,
+            "running": st.listeners.https(),
+        }),
+        json!({
+            "name": "SOCKS5",
+            "bind": "0.0.0.0",
+            "port": cfg.socks5.port,
+            "running": st.listeners.socks5(),
+        }),
         json!({
             "name": "REST API",
             "bind": cfg.api.bind,
@@ -75,17 +93,6 @@ fn port_of_bind(bind: &str) -> u16 {
         .next()
         .and_then(|p| p.parse().ok())
         .unwrap_or(0)
-}
-
-async fn probe_listener(name: &str, host: &str, port: u16) -> Value {
-    let addr = format!("{host}:{port}");
-    let running = tokio::net::TcpStream::connect(&addr).await.is_ok();
-    json!({
-        "name": name,
-        "bind": host,
-        "port": port,
-        "running": running,
-    })
 }
 
 async fn stats(State(st): State<ApiState>) -> Json<Value> {
@@ -263,6 +270,455 @@ async fn get_config(State(st): State<ApiState>) -> Json<Value> {
     Json(serde_json::to_value(cfg.redacted()).unwrap_or(json!({})))
 }
 
+/// Fields that only take effect after a process restart.
+fn restart_fields_diff(
+    old: &crate::config::Config,
+    new: &crate::config::Config,
+) -> Vec<&'static str> {
+    let mut v = Vec::new();
+    if old.data_dir != new.data_dir {
+        v.push("data_dir");
+    }
+    if old.http.port != new.http.port {
+        v.push("http.port");
+    }
+    if old.https.port != new.https.port {
+        v.push("https.port");
+    }
+    if old.socks5.port != new.socks5.port {
+        v.push("socks5.port");
+    }
+    if old.api.bind != new.api.bind {
+        v.push("api.bind");
+    }
+    if old.cache.dir != new.cache.dir {
+        v.push("cache.dir");
+    }
+    if old.ca.dir != new.ca.dir {
+        v.push("ca.dir");
+    }
+    if old.logs.db_path != new.logs.db_path {
+        v.push("logs.db_path");
+    }
+    if old.pac.enabled != new.pac.enabled {
+        v.push("pac.enabled");
+    }
+    if old.pac.bind != new.pac.bind {
+        v.push("pac.bind");
+    }
+    v
+}
+
+/// One validation problem, keyed to a Settings form field.
+#[derive(Debug, Clone, Serialize)]
+struct FieldIssue {
+    field: &'static str,
+    message: String,
+}
+
+fn issue(field: &'static str, message: impl Into<String>) -> FieldIssue {
+    FieldIssue {
+        field,
+        message: message.into(),
+    }
+}
+
+/// Ports this process currently listens on (from the live/old config).
+fn bound_ports(old: &crate::config::Config) -> Vec<u16> {
+    let mut v = vec![old.http.port, old.https.port, old.socks5.port];
+    if let Ok(sa) = old.api.bind.parse::<std::net::SocketAddr>() {
+        v.push(sa.port());
+    }
+    if old.pac.enabled {
+        if let Ok(sa) = old.pac.bind.parse::<std::net::SocketAddr>() {
+            v.push(sa.port());
+        }
+    }
+    v
+}
+
+/// True when nothing else holds the port. Ports we currently hold are OK —
+/// they are released on restart, which is when the new value takes effect.
+fn port_available(port: u16, ours: &[u16]) -> bool {
+    if ours.contains(&port) {
+        return true;
+    }
+    std::net::TcpListener::bind(("0.0.0.0", port)).is_ok()
+}
+
+fn bind_available(bind: &str, ours: &[u16]) -> bool {
+    match bind.parse::<std::net::SocketAddr>() {
+        Ok(sa) => {
+            if ours.contains(&sa.port()) {
+                return true;
+            }
+            std::net::TcpListener::bind(sa).is_ok()
+        }
+        Err(_) => false,
+    }
+}
+
+fn probe_dir_writable(dir: &std::path::Path) -> Result<(), String> {
+    let probe = dir.join(format!(".rustcache-write-probe-{}", std::process::id()));
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            Ok(())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn nearest_existing(path: &std::path::Path) -> Option<&std::path::Path> {
+    let mut cur = Some(path);
+    while let Some(p) = cur {
+        if p.as_os_str().is_empty() {
+            cur = p.parent();
+            continue;
+        }
+        if p.exists() {
+            return Some(p);
+        }
+        cur = p.parent();
+    }
+    None
+}
+
+fn check_dir_field(issues: &mut Vec<FieldIssue>, field: &'static str, path: &std::path::Path) {
+    if path.as_os_str().is_empty() {
+        issues.push(issue(field, "path must not be empty"));
+        return;
+    }
+    if path.exists() {
+        if !path.is_dir() {
+            issues.push(issue(
+                field,
+                format!("{} exists but is not a directory", path.display()),
+            ));
+            return;
+        }
+        if let Err(e) = probe_dir_writable(path) {
+            issues.push(issue(
+                field,
+                format!("{} is not writable: {e}", path.display()),
+            ));
+        }
+        return;
+    }
+    match nearest_existing(path) {
+        None => issues.push(issue(
+            field,
+            format!("{}: no existing parent directory", path.display()),
+        )),
+        Some(anc) => {
+            if !anc.is_dir() {
+                issues.push(issue(
+                    field,
+                    format!("{} exists but is not a directory", anc.display()),
+                ));
+                return;
+            }
+            if let Err(e) = probe_dir_writable(anc) {
+                issues.push(issue(
+                    field,
+                    format!(
+                        "cannot create {}: parent {} is not writable: {e}",
+                        path.display(),
+                        anc.display()
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+fn check_file_field(issues: &mut Vec<FieldIssue>, field: &'static str, path: &std::path::Path) {
+    if path.as_os_str().is_empty() {
+        issues.push(issue(field, "path must not be empty"));
+        return;
+    }
+    if path.exists() {
+        if path.is_dir() {
+            issues.push(issue(
+                field,
+                format!("{} is a directory, expected a file", path.display()),
+            ));
+            return;
+        }
+        if let Err(e) = std::fs::OpenOptions::new().append(true).open(path) {
+            issues.push(issue(
+                field,
+                format!("{} cannot be opened for write: {e}", path.display()),
+            ));
+        }
+        return;
+    }
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => check_dir_field(issues, field, parent),
+        _ => {}
+    }
+}
+
+/// Validate a full config candidate against the live one. Collects every issue
+/// (ranges, bind format, port availability, path type/permissions).
+fn validate_config(
+    new: &crate::config::Config,
+    old: &crate::config::Config,
+) -> Result<(), Vec<FieldIssue>> {
+    let mut issues = Vec::new();
+
+    if new.data_dir.trim().is_empty() {
+        issues.push(issue("data_dir", "must not be empty"));
+    }
+    if new.http.port == 0 {
+        issues.push(issue("http.port", "must be 1..=65535"));
+    }
+    if new.https.port == 0 {
+        issues.push(issue("https.port", "must be 1..=65535"));
+    }
+    if new.socks5.port == 0 {
+        issues.push(issue("socks5.port", "must be 1..=65535"));
+    }
+    if new.cache.dir.trim().is_empty() {
+        issues.push(issue("cache.dir", "must not be empty"));
+    }
+    if new.cache.max_bytes == 0 {
+        issues.push(issue("cache.max_bytes", "must be > 0"));
+    }
+    if new.cache.max_object_bytes == 0 {
+        issues.push(issue("cache.max_object_bytes", "must be > 0"));
+    }
+    if new.cache.max_object_bytes > new.cache.max_bytes {
+        issues.push(issue(
+            "cache.max_object_bytes",
+            "must be <= cache.max_bytes",
+        ));
+    }
+    if new.ca.dir.trim().is_empty() {
+        issues.push(issue("ca.dir", "must not be empty"));
+    }
+    if new.logs.db_path.trim().is_empty() {
+        issues.push(issue("logs.db_path", "must not be empty"));
+    }
+    if !(1..=10_000_000).contains(&new.logs.max_rows) {
+        issues.push(issue("logs.max_rows", "must be 1..=10000000"));
+    }
+    if !(1..=3650).contains(&new.logs.max_age_days) {
+        issues.push(issue("logs.max_age_days", "must be 1..=3650"));
+    }
+    if !(10..=86_400).contains(&new.logs.cleanup_interval_secs) {
+        issues.push(issue("logs.cleanup_interval_secs", "must be 10..=86400"));
+    }
+
+    // Bind format first — availability checks need a parsed addr.
+    let api_bind_ok = if new.api.bind.trim().is_empty() {
+        issues.push(issue("api.bind", "must not be empty"));
+        false
+    } else if new.api.bind.parse::<std::net::SocketAddr>().is_err() {
+        issues.push(issue("api.bind", "must be host:port, e.g. 127.0.0.1:8080"));
+        false
+    } else {
+        true
+    };
+    let pac_bind_ok = if new.pac.bind.trim().is_empty() {
+        issues.push(issue("pac.bind", "must not be empty"));
+        false
+    } else if new.pac.bind.parse::<std::net::SocketAddr>().is_err() {
+        issues.push(issue("pac.bind", "must be host:port, e.g. 0.0.0.0:8081"));
+        false
+    } else {
+        true
+    };
+
+    // Internal conflicts: two listeners cannot share one port.
+    {
+        let mut used: Vec<(&'static str, u16)> = Vec::new();
+        let mut claim = |issues: &mut Vec<FieldIssue>, field: &'static str, port: u16| {
+            if port == 0 {
+                return;
+            }
+            if let Some((other, _)) = used.iter().find(|(_, p)| *p == port) {
+                issues.push(issue(
+                    field,
+                    format!("port {port} is already used by {other}"),
+                ));
+            } else {
+                used.push((field, port));
+            }
+        };
+        claim(&mut issues, "http.port", new.http.port);
+        claim(&mut issues, "https.port", new.https.port);
+        claim(&mut issues, "socks5.port", new.socks5.port);
+        if api_bind_ok {
+            if let Ok(sa) = new.api.bind.parse::<std::net::SocketAddr>() {
+                claim(&mut issues, "api.bind", sa.port());
+            }
+        }
+        if new.pac.enabled && pac_bind_ok {
+            if let Ok(sa) = new.pac.bind.parse::<std::net::SocketAddr>() {
+                claim(&mut issues, "pac.bind", sa.port());
+            }
+        }
+    }
+
+    // Port availability — only for values that change; current ports stay ours
+    // until restart. Unchanged binds are already held by this process.
+    let ours = bound_ports(old);
+    if new.http.port != old.http.port && new.http.port != 0 && !port_available(new.http.port, &ours)
+    {
+        issues.push(issue(
+            "http.port",
+            format!("port {} is already in use", new.http.port),
+        ));
+    }
+    if new.https.port != old.https.port
+        && new.https.port != 0
+        && !port_available(new.https.port, &ours)
+    {
+        issues.push(issue(
+            "https.port",
+            format!("port {} is already in use", new.https.port),
+        ));
+    }
+    if new.socks5.port != old.socks5.port
+        && new.socks5.port != 0
+        && !port_available(new.socks5.port, &ours)
+    {
+        issues.push(issue(
+            "socks5.port",
+            format!("port {} is already in use", new.socks5.port),
+        ));
+    }
+    if api_bind_ok && new.api.bind != old.api.bind && !bind_available(&new.api.bind, &ours) {
+        issues.push(issue(
+            "api.bind",
+            format!("address {} is already in use", new.api.bind),
+        ));
+    }
+    // PAC listener only binds when enabled.
+    if new.pac.enabled
+        && pac_bind_ok
+        && new.pac.bind != old.pac.bind
+        && !bind_available(&new.pac.bind, &ours)
+    {
+        issues.push(issue(
+            "pac.bind",
+            format!("address {} is already in use", new.pac.bind),
+        ));
+    }
+
+    // Paths: type + create/write permissions.
+    if !new.data_dir.trim().is_empty() {
+        check_dir_field(&mut issues, "data_dir", &new.data_dir_path());
+    }
+    if !new.cache.dir.trim().is_empty() {
+        check_dir_field(&mut issues, "cache.dir", &new.cache_dir());
+    }
+    if !new.ca.dir.trim().is_empty() {
+        check_dir_field(&mut issues, "ca.dir", &new.ca_dir());
+    }
+    if !new.logs.db_path.trim().is_empty() {
+        check_file_field(&mut issues, "logs.db_path", &new.logs_db_path());
+    }
+
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(issues)
+    }
+}
+
+fn issues_response(issues: &[FieldIssue]) -> Response {
+    let summary = issues
+        .iter()
+        .map(|i| format!("{}: {}", i.field, i.message))
+        .collect::<Vec<_>>()
+        .join("; ");
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({"ok": false, "error": summary, "errors": issues})),
+    )
+        .into_response()
+}
+
+/// Replace the whole effective config (all TOML keys). Hot-applies exclusion +
+/// cache-limit + log-retention changes; listener/path changes need a restart.
+/// Never restarts the process itself — see `restart_process`.
+async fn put_config(State(st): State<ApiState>, Json(body): Json<Value>) -> Response {
+    let mut new_cfg: crate::config::Config = match serde_json::from_value(body) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": format!("invalid config: {e}")})),
+            )
+                .into_response();
+        }
+    };
+    // Keep CLI --data-dir override if the client omitted/blanked data_dir.
+    let old = st.config.get().await;
+    if new_cfg.data_dir.trim().is_empty() {
+        new_cfg.data_dir = old.data_dir.clone();
+    }
+    if let Err(issues) = validate_config(&new_cfg, &old) {
+        return issues_response(&issues);
+    }
+
+    let restart = restart_fields_diff(&old, &new_cfg);
+
+    match std::fs::write(
+        &st.config_path,
+        toml::to_string_pretty(&new_cfg).unwrap_or_default(),
+    ) {
+        Ok(()) => {}
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"ok": false, "error": format!("write config: {e}")})),
+            )
+                .into_response();
+        }
+    }
+
+    // Hot-apply what we can without rebinding sockets / reopening stores.
+    if let Err(e) = st.apply_config(new_cfg.clone()).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"ok": false, "error": e.to_string()})),
+        )
+            .into_response();
+    }
+    st.config.set(new_cfg.clone()).await;
+
+    // Immediate log-retention pass so the UI reflects the new limits.
+    match st
+        .engine
+        .logs
+        .cleanup(new_cfg.logs.max_rows, new_cfg.logs.max_age_days)
+        .await
+    {
+        Ok((by_age, by_rows)) => {
+            if by_age + by_rows > 0 {
+                tracing::info!(by_age, by_rows, "request log cleanup (config)");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "request log cleanup failed"),
+    }
+
+    Json(json!({
+        "ok": true,
+        "config": new_cfg.redacted(),
+        "restart_required": !restart.is_empty(),
+        "restart_fields": restart,
+    }))
+    .into_response()
+}
+
 async fn reload_config(State(st): State<ApiState>) -> Response {
     match st.reload_config().await {
         Ok(cfg) => Json(json!({"ok": true, "config": cfg.redacted()})).into_response(),
@@ -272,6 +728,51 @@ async fn reload_config(State(st): State<ApiState>) -> Response {
         )
             .into_response(),
     }
+}
+
+#[derive(Deserialize)]
+struct RestartQuery {
+    dry_run: Option<String>,
+}
+
+fn is_truthy(v: Option<&str>) -> bool {
+    matches!(v, Some("1") | Some("true") | Some("yes") | Some("on"))
+}
+
+/// Re-exec the current process with the same argv (used by the UI restart button).
+/// `?dry_run=1` (or `true`) only acknowledges — used by tests so the harness does not exit.
+async fn restart_process(Query(q): Query<RestartQuery>) -> Response {
+    if is_truthy(q.dry_run.as_deref()) {
+        return Json(json!({"ok": true, "dry_run": true})).into_response();
+    }
+    tokio::spawn(async {
+        // Give the HTTP response time to flush before we tear the process down.
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let exe = match std::env::current_exe() {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(error = %e, "restart: current_exe failed");
+                std::process::exit(1);
+            }
+        };
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let parent = std::process::id().to_string();
+        match std::process::Command::new(&exe)
+            .args(&args)
+            .env("RUSTCACHE_RESTARTED_FROM", &parent)
+            .spawn()
+        {
+            Ok(child) => {
+                tracing::info!(child = child.id(), "restart: spawned replacement, exiting");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "restart: spawn failed");
+                std::process::exit(1);
+            }
+        }
+    });
+    Json(json!({"ok": true, "message": "restarting"})).into_response()
 }
 
 #[derive(Deserialize)]

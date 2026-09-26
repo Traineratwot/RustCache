@@ -111,6 +111,20 @@ export interface Config {
   };
 }
 
+export interface FieldIssue {
+  field: string;
+  message: string;
+}
+
+export interface ConfigUpdateResult {
+  ok: boolean;
+  config?: Config;
+  restart_required?: boolean;
+  restart_fields?: string[];
+  error?: string;
+  errors?: FieldIssue[];
+}
+
 export interface PacInfo {
   enabled: boolean;
   mode: PacMode;

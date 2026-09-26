@@ -12,8 +12,9 @@ use rustcache_core::stats::ReqRecord;
 
 use crate::engine::{CacheEngine, Lookup, SharedEngine};
 
-pub async fn serve(addr: std::net::SocketAddr, engine: SharedEngine) -> anyhow::Result<()> {
-    let listener = TcpListener::bind(addr).await?;
+/// Accept loop on a pre-bound listener (bind happens in `main` so failures are visible).
+pub async fn serve(listener: TcpListener, engine: SharedEngine) -> anyhow::Result<()> {
+    let addr = listener.local_addr()?;
     tracing::info!(%addr, "http proxy listening");
     loop {
         let (stream, peer) = listener.accept().await?;
@@ -196,7 +197,7 @@ async fn handle_absolute(
                     Some(req.body.as_slice())
                 },
                 None,
-                engine.max_object_bytes,
+                engine.max_object_bytes(),
             )
             .await;
         match resp {
@@ -237,7 +238,7 @@ async fn handle_absolute(
                     Some(req.body.as_slice())
                 },
                 None,
-                engine.max_object_bytes,
+                engine.max_object_bytes(),
             )
             .await;
         match resp {

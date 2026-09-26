@@ -3,4 +3,4 @@ pub mod routes;
 pub mod state;
 
 pub use routes::{pac_router, router};
-pub use state::ApiState;
+pub use state::{ApiState, ListenerStatus};

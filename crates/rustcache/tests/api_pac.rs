@@ -16,10 +16,8 @@ use rustcache_core::excl::ExclusionSet;
 use tower::util::ServiceExt;
 
 async fn make_state(domains: Vec<String>, cidrs: Vec<String>) -> ApiState {
-    let (engine, _dir) = spawn_engine(ExclusionSet::from_specs(&domains, &cidrs)).await;
-    let ca_dir = std::env::temp_dir().join(format!("rc-pac-ca-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&ca_dir);
-    let ca = generate_ca(&ca_dir).unwrap();
+    let (engine, dir) = spawn_engine(ExclusionSet::from_specs(&domains, &cidrs)).await;
+    let ca = generate_ca(dir.join("ca")).unwrap();
     let mut cfg = Config::default();
     cfg.exclude.domains = domains;
     cfg.exclude.cidrs = cidrs;
@@ -27,8 +25,9 @@ async fn make_state(domains: Vec<String>, cidrs: Vec<String>) -> ApiState {
         engine,
         config: LiveConfig::new(cfg),
         ca: Arc::new(ca),
-        config_path: ca_dir.join("config.toml"),
+        config_path: dir.join("config.toml"),
         started_at: std::time::Instant::now(),
+        listeners: Default::default(),
     }
 }
 
@@ -174,6 +173,7 @@ async fn pac_mode_http_only() {
         ca: Arc::new(ca),
         config_path: ca_dir.join("config.toml"),
         started_at: std::time::Instant::now(),
+        listeners: Default::default(),
     };
     let (_s, _h, body) = get_pac_response(state, "/proxy.pac", "192.168.1.1").await;
     assert!(body.contains("PROXY 192.168.1.1:"));

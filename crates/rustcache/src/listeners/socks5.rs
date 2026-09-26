@@ -16,8 +16,9 @@ const ATYP_IPV4: u8 = 0x01;
 const ATYP_DOMAIN: u8 = 0x03;
 const ATYP_IPV6: u8 = 0x04;
 
-pub async fn serve(addr: std::net::SocketAddr, engine: SharedEngine) -> anyhow::Result<()> {
-    let listener = TcpListener::bind(addr).await?;
+/// Accept loop on a pre-bound listener (bind happens in `main` so failures are visible).
+pub async fn serve(listener: TcpListener, engine: SharedEngine) -> anyhow::Result<()> {
+    let addr = listener.local_addr()?;
     tracing::info!(%addr, "socks5 listening");
     loop {
         let (stream, peer) = listener.accept().await?;

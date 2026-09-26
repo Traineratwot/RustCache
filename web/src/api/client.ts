@@ -1,6 +1,7 @@
 import type {
   CacheInfo,
   Config,
+  ConfigUpdateResult,
   HealthInfo,
   LogSettings,
   LogStats,
@@ -95,6 +96,20 @@ export function getConfig(): Promise<Config> {
   return getJson("/api/config");
 }
 
+/**
+ * Save the full TOML config. Returns the stored config + restart-required fields.
+ * Validation failures come back as `{ok: false, error, errors[]}` (not thrown)
+ * so the form can highlight the offending fields.
+ */
+export async function updateConfig(body: Config): Promise<ConfigUpdateResult> {
+  const r = await fetch("/api/config", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return (await r.json()) as ConfigUpdateResult;
+}
+
 export function getNetInfo(): Promise<NetInfo> {
   return getJson("/api/netinfo");
 }
@@ -105,6 +120,13 @@ export function getPac(): Promise<PacInfo> {
 
 export function reloadConfig(): Promise<{ ok: boolean; config?: Config; error?: string }> {
   return sendJson("/api/config/reload", "POST");
+}
+
+/** Re-exec the process (same argv). `dryRun` only acknowledges — used in tests. */
+export function restartProcess(
+  dryRun = false,
+): Promise<{ ok: boolean; dry_run?: boolean; message?: string; error?: string }> {
+  return sendJson(dryRun ? "/api/config/restart?dry_run=1" : "/api/config/restart", "POST");
 }
 
 export async function downloadCa(): Promise<string> {

@@ -17,17 +17,18 @@ use tower::util::ServiceExt;
 
 async fn make_state() -> (ApiState, std::path::PathBuf) {
     let (engine, dir) = spawn_engine(ExclusionSet::default()).await;
-    let ca_dir = std::env::temp_dir().join(format!("rc-req-ca-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&ca_dir);
-    let ca = generate_ca(&ca_dir).unwrap();
+    let ca = generate_ca(dir.join("ca")).unwrap();
     let mut cfg = Config::default();
-    cfg.logs.db_path = dir.join("logs.db").to_string_lossy().into_owned();
+    // Keep path validation hermetic — do not touch the real home data dir.
+    cfg.data_dir = dir.to_string_lossy().into_owned();
+    cfg.logs.db_path = "logs.db".into();
     let state = ApiState {
         engine,
         config: LiveConfig::new(cfg),
         ca: Arc::new(ca),
         config_path: dir.join("config.toml"),
         started_at: std::time::Instant::now(),
+        listeners: Default::default(),
     };
     (state, dir)
 }
@@ -339,4 +340,263 @@ async fn log_stats_hit_rate_bytes() {
     assert!((v["hit_rate"].as_f64().unwrap() - 0.5).abs() < 1e-9);
     assert_eq!(v["bytes_saved"], 300);
     assert_eq!(v["bytes_served"], 1500);
+}
+
+fn full_config_json(data_dir: &str) -> serde_json::Value {
+    serde_json::json!({
+        "data_dir": data_dir,
+        "http": {"port": 3128},
+        "https": {"port": 3129},
+        "socks5": {"port": 1080},
+        "api": {"bind": "127.0.0.1:8080"},
+        "cache": {"dir": "cache", "max_bytes": 2147483648u64, "max_object_bytes": 52428800u64},
+        "exclude": {"domains": [], "cidrs": []},
+        "ca": {"dir": "ca"},
+        "pac": {"enabled": true, "bind": "0.0.0.0:8081", "mode": "http+socks"},
+        "logs": {"db_path": "logs.db", "max_rows": 10000, "max_age_days": 7, "cleanup_interval_secs": 300}
+    })
+}
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .expect("ephemeral port")
+}
+
+#[tokio::test]
+async fn config_put_full_roundtrip() {
+    install_crypto();
+    let (state, dir) = make_state().await;
+    let data_dir = dir.to_string_lossy().into_owned();
+    let new_port = free_port();
+
+    let mut body = full_config_json(&data_dir);
+    body["http"]["port"] = serde_json::json!(new_port);
+    body["cache"]["max_bytes"] = serde_json::json!(123456789u64);
+    body["logs"]["max_rows"] = serde_json::json!(500);
+    body["pac"]["mode"] = serde_json::json!("socks");
+
+    let (status, v) = json_send(state.clone(), "PUT", "/api/config", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "resp: {v}");
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["config"]["http"]["port"], new_port);
+    assert_eq!(v["config"]["cache"]["max_bytes"], 123456789u64);
+    assert_eq!(v["config"]["logs"]["max_rows"], 500);
+    assert_eq!(v["config"]["pac"]["mode"], "socks");
+    assert_eq!(v["restart_required"], true);
+    assert!(v["restart_fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|x| x == "http.port"));
+
+    // persisted to config.toml
+    let text = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+    assert!(text.contains(&new_port.to_string()));
+
+    // GET reflects the same values
+    let (_, g) = json_get(state.clone(), "/api/config").await;
+    assert_eq!(g["http"]["port"], new_port);
+    assert_eq!(g["pac"]["mode"], "socks");
+
+    // live engine cache limits were hot-applied
+    assert_eq!(state.engine.max_bytes(), 123456789u64);
+}
+
+#[tokio::test]
+async fn config_put_hot_apply_no_restart() {
+    install_crypto();
+    let (state, _dir) = make_state().await;
+
+    // Start from the live config so only hot fields change.
+    let (_, mut body) = json_get(state.clone(), "/api/config").await;
+    body["cache"]["max_bytes"] = serde_json::json!(999_000_000u64);
+    body["cache"]["max_object_bytes"] = serde_json::json!(1_000_000u64);
+    body["exclude"]["domains"] = serde_json::json!(["*.local"]);
+    body["logs"]["max_rows"] = serde_json::json!(77);
+
+    let (status, v) = json_send(state.clone(), "PUT", "/api/config", Some(body)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(v["restart_required"], false, "resp: {v}");
+    assert_eq!(state.engine.max_bytes(), 999_000_000u64);
+    assert_eq!(state.engine.max_object_bytes(), 1_000_000u64);
+
+    let excl = state.exclusions().await;
+    assert!(excl.iter().any(|m| matches!(
+        m,
+        rustcache_core::excl::Matcher::Wildcard { value } if value == "local"
+    )));
+}
+
+#[tokio::test]
+async fn config_put_rejects_invalid() {
+    install_crypto();
+    let (state, dir) = make_state().await;
+    let data_dir = dir.to_string_lossy().into_owned();
+
+    let mut body = full_config_json(&data_dir);
+    body["http"]["port"] = serde_json::json!(0);
+    let (status, v) = json_send(state.clone(), "PUT", "/api/config", Some(body)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(v["ok"], false);
+    assert!(v["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["field"] == "http.port"));
+
+    let mut body = full_config_json(&data_dir);
+    body["cache"]["max_object_bytes"] = serde_json::json!(u64::MAX);
+    body["cache"]["max_bytes"] = serde_json::json!(1u64);
+    let (status, _) = json_send(state.clone(), "PUT", "/api/config", Some(body)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let mut body = full_config_json(&data_dir);
+    body["api"]["bind"] = serde_json::json!("not-an-addr");
+    let (status, _) = json_send(state.clone(), "PUT", "/api/config", Some(body)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let mut body = full_config_json(&data_dir);
+    body["logs"]["max_rows"] = serde_json::json!(0);
+    let (status, _) = json_send(state.clone(), "PUT", "/api/config", Some(body)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn config_put_rejects_busy_port() {
+    install_crypto();
+    let (state, dir) = make_state().await;
+    let data_dir = dir.to_string_lossy().into_owned();
+
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let busy = held.local_addr().unwrap().port();
+
+    let mut body = full_config_json(&data_dir);
+    body["http"]["port"] = serde_json::json!(busy);
+    let (status, v) = json_send(state.clone(), "PUT", "/api/config", Some(body)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "resp: {v}");
+    assert_eq!(v["ok"], false);
+    assert!(
+        v["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["field"] == "http.port"),
+        "resp: {v}"
+    );
+
+    // An unused port is accepted.
+    let free = free_port();
+    let mut body = full_config_json(&data_dir);
+    body["http"]["port"] = serde_json::json!(free);
+    let (status, v) = json_send(state.clone(), "PUT", "/api/config", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "resp: {v}");
+}
+
+#[tokio::test]
+async fn config_put_rejects_bad_path() {
+    install_crypto();
+    let (state, dir) = make_state().await;
+    let data_dir = dir.to_string_lossy().into_owned();
+
+    // A regular file where a directory is required.
+    let blocker = dir.join("not-a-dir");
+    std::fs::write(&blocker, b"x").unwrap();
+
+    let mut body = full_config_json(&data_dir);
+    body["cache"]["dir"] = serde_json::json!(blocker.join("cache").to_string_lossy());
+    let (status, v) = json_send(state.clone(), "PUT", "/api/config", Some(body)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "resp: {v}");
+    assert!(
+        v["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["field"] == "cache.dir"),
+        "resp: {v}"
+    );
+
+    // data_dir pointing at a file must also fail.
+    let mut body = full_config_json(&data_dir);
+    body["data_dir"] = serde_json::json!(blocker.to_string_lossy());
+    let (status, v) = json_send(state.clone(), "PUT", "/api/config", Some(body)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "resp: {v}");
+    assert!(
+        v["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["field"] == "data_dir"),
+        "resp: {v}"
+    );
+
+    // logs.db_path may not be a directory.
+    let mut body = full_config_json(&data_dir);
+    body["logs"]["db_path"] = serde_json::json!(dir.join("ca").to_string_lossy());
+    let (status, v) = json_send(state.clone(), "PUT", "/api/config", Some(body)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "resp: {v}");
+    assert!(
+        v["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["field"] == "logs.db_path"),
+        "resp: {v}"
+    );
+}
+
+#[tokio::test]
+async fn config_put_rejects_port_conflict() {
+    install_crypto();
+    let (state, dir) = make_state().await;
+    let data_dir = dir.to_string_lossy().into_owned();
+
+    // http and https cannot share a port — one bind would silently fail.
+    let mut body = full_config_json(&data_dir);
+    let p = free_port();
+    body["http"]["port"] = serde_json::json!(p);
+    body["https"]["port"] = serde_json::json!(p);
+    let (status, v) = json_send(state.clone(), "PUT", "/api/config", Some(body)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "resp: {v}");
+    assert!(
+        v["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["field"] == "https.port"
+                && e["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("http.port")),
+        "resp: {v}"
+    );
+
+    // socks5 vs api.bind is also a conflict.
+    let mut body = full_config_json(&data_dir);
+    let p = free_port();
+    body["socks5"]["port"] = serde_json::json!(p);
+    body["api"]["bind"] = serde_json::json!(format!("127.0.0.1:{p}"));
+    let (status, v) = json_send(state.clone(), "PUT", "/api/config", Some(body)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "resp: {v}");
+    assert!(
+        v["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["field"] == "api.bind"),
+        "resp: {v}"
+    );
+}
+
+#[tokio::test]
+async fn config_restart_dry_run() {
+    install_crypto();
+    let (state, _dir) = make_state().await;
+
+    // dry_run must not re-exec / exit the test process.
+    let (status, v) = json_send(state.clone(), "POST", "/api/config/restart?dry_run=1", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["dry_run"], true);
 }

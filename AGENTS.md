@@ -47,7 +47,7 @@ Two separate streams — do not confuse them:
 Dev server proxies `/api` → `http://127.0.0.1:8080` (`web/vite.config.ts`).
 Production: `npm --prefix web run build` → `web/dist`, embedded into the binary with `--features embed-ui` (`ui_embed.rs` serves SPA with `index.html` fallback).
 
-REST surface (see `crates/rustcache/src/api/routes.rs`): `/api/health` `/api/stats` `/api/requests` `/api/logs/settings` `/api/config` `/api/config/reload` `/api/exclusions` `/api/ca.crt` `/api/cache` `/api/netinfo` `/api/pac` + `/proxy.pac` `/wpad.dat`.
+REST surface (see `crates/rustcache/src/api/routes.rs`): `/api/health` `/api/stats` `/api/requests` `/api/logs/settings` `/api/config` `/api/config/reload` `/api/config/restart` `/api/exclusions` `/api/ca.crt` `/api/cache` `/api/netinfo` `/api/pac` + `/proxy.pac` `/wpad.dat`.
 PAC listener (default `0.0.0.0:8081`, `[pac]`) is LAN-facing and serves **only** the two PAC paths — no admin endpoints.
 
 ## Commands
@@ -90,6 +90,7 @@ For UI work also: `npm --prefix web run lint && npm --prefix web run build`.
 - Only GET populates the cache; HEAD may read a GET entry, never store
 - Requests with `Authorization` bypass the cache entirely
 - API binds 127.0.0.1 by default
+- **All `config.toml` settings must be manageable from the web UI.** Every field in `config.example.toml` / `config/schema.rs` has a matching control in `web/src/pages/Settings.tsx` and is saved via `PUT /api/config` (exclusions use `PUT /api/exclusions`). When you add a config key, add it to: schema, example.toml, Settings form, `validate_config`/`restart_fields_diff`, and `web/src/api/types.ts`.
 
 ## Gotchas
 
@@ -97,7 +98,9 @@ For UI work also: `npm --prefix web run lint && npm --prefix web run build`.
 - Do not hold `parking_lot::Mutex` across `.await` — futures become non-`Send`. Use `tokio::sync::Mutex` for async sections (disk write lock already does).
 - Upstream TLS trusts `webpki-roots` only: a local/private TLS origin fails MITM fetch (502). Smoke with a public host.
 - Rebuild `target/debug/rustcache` before retesting — a stale binary masks fixes.
-- Config hot-reload applies exclusions only; ports and cache limits need a restart. API writes to `config.toml` on exclusion/log-settings changes (whole file rewritten).
+- Config hot-reload applies exclusions, cache limits (`max_bytes` / `max_object_bytes`) and log retention; ports, binds and paths need a restart. `PUT /api/config` writes the whole `config.toml`, hot-applies, and returns `restart_fields` — it does **not** restart. `POST /api/config/restart` re-execs the process (same argv); `?dry_run=1` is for tests. On self-restart the child waits for `RUSTCACHE_RESTARTED_FROM` to exit before binding.
+- `PUT /api/config` validates before write: ranges/bind format, **internal port conflicts** (http/https/socks5/api/pac must be unique), port availability (changed ports only — current ports are ours until restart), and path type + create/write permissions. Returns `errors: [{field, message}]` so the Settings form can highlight fields.
+- Health reports actual bind success (`ListenerStatus`), not a TCP probe — two services on one misconfigured port used to both show "running".
 - `Vary` is parsed but is not part of the cache key (known limitation).
 - SOCKS5 is no-auth CONNECT-only tunnel — no caching on that path. CONNECT on :3128 is also a raw tunnel.
 - Excluded hosts on the MITM port are spliced (raw tunnel, no MITM) — client sees the origin cert.
