@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RustCache — APT repository</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <h1>RustCache</h1>
+      <p class="tagline">Caching HTTP/HTTPS proxy with MITM, disk cache, SOCKS5 and web UI.</p>
+    </header>
+
+    <section>
+      <h2>Install (Debian / Ubuntu)</h2>
+      <pre><code>echo "deb [trusted=yes] https://traineratwot.github.io/RustCache/ ./" \
+  | sudo tee /etc/apt/sources.list.d/rustcache.list
+sudo apt update
+sudo apt install rustcache</code></pre>
+      <p>After install:</p>
+      <pre><code>sudo systemctl status rustcache
+# config:  /etc/rustcache/config.toml
+# data:    /var/lib/rustcache
+# logs:    journalctl -u rustcache
+# web UI:  http://127.0.0.1:8080</code></pre>
+    </section>
+
+    <section>
+      <h2>Packages</h2>
+      <p>This directory is a flat APT repository (<code>pool/</code> + <code>Packages.gz</code>).</p>
+      <!-- PACKAGES -->
+      <p class="muted">Direct downloads are also on
+        <a href="https://github.com/Traineratwot/RustCache/releases">GitHub Releases</a>.</p>
+    </section>
+
+    <footer>
+      <a href="https://github.com/Traineratwot/RustCache">github.com/Traineratwot/RustCache</a>
+    </footer>
+  </main>
+</body>
+</html>

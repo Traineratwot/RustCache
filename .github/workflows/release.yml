@@ -156,19 +156,20 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Materialize previous gh-pages content
+      - name: Materialize site
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # keep accumulated pool/ from previous gh-pages
           git clone --depth 1 --branch gh-pages \
             "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" site \
             || (mkdir -p site && git -C site init && git -C site checkout --orphan gh-pages)
           mkdir -p site/pool
+          cp dist/*.deb site/pool/
+          # static site source lives in pages/ (index.html + style.css)
+          cp pages/index.html pages/style.css site/
 
-      - name: Add new packages
-        run: cp dist/*.deb site/pool/
-
-      - name: Regenerate apt index
+      - name: Regenerate apt index and package list
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq dpkg-dev
@@ -181,6 +182,27 @@ jobs:
             'Architectures: amd64 arm64' \
             'Description: RustCache apt repository' \
             > Release
+          # fill <!-- PACKAGES --> on the landing page
+          {
+            echo '<ul class="packages">'
+            for f in pool/*.deb; do
+              [ -e "$f" ] || continue
+              base=$(basename "$f")
+              # rustcache_0.1.0_amd64.deb → 0.1.0 / amd64
+              ver=$(echo "$base" | sed -n 's/^rustcache_\(.*\)_.*\.deb$/\1/p')
+              arch=$(echo "$base" | sed -n 's/^.*_\(amd64\|arm64\)\.deb$/\1/p')
+              size=$(du -h "$f" | cut -f1)
+              printf '<li><a class="name" href="%s">%s</a><span class="meta">%s · %s</span></li>\n' \
+                "$f" "$base" "$arch" "$size"
+            done
+            echo '</ul>'
+          } > /tmp/packages.html
+          python3 - <<'PY'
+          from pathlib import Path
+          html = Path("index.html").read_text()
+          block = Path("/tmp/packages.html").read_text()
+          Path("index.html").write_text(html.replace("<!-- PACKAGES -->", block))
+          PY
 
       - name: Push gh-pages
         env:
