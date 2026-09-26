@@ -1,0 +1,4 @@
+Origin: RustCache
+Label: RustCache
+Architectures: amd64 arm64
+Description: RustCache apt repository
