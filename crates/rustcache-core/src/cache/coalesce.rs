@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::Arc;
 
 use parking_lot::Mutex;
 use tokio::sync::broadcast;
@@ -80,12 +79,14 @@ impl<T: Clone> Coalesce<T> {
 }
 
 /// Shared handle.
-pub type SharedCoalesce<T> = Arc<Coalesce<T>>;
+// Note: a `SharedCoalesce<T>` alias used to live here; callers that need
+// sharing wrap `Coalesce` in `Arc` themselves.
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn parallel_calls_share_one_fetch() {

@@ -2,6 +2,10 @@
 
 use std::fmt;
 
+/// A cache key derived from a canonical URL (blake3 digest as lowercase hex).
+///
+/// Disk layout and any filesystem access keyed by cache identity must use
+/// [`is_hex_key`] so a crafted key can never escape the cache root.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct CacheKey {
     hex: String,
@@ -14,11 +18,7 @@ impl CacheKey {
 
     /// 2-level fanout prefix: `ab/cd`.
     pub fn fanout(&self) -> (&str, &str) {
-        let b = self.hex.as_bytes();
-        // key is always 64 hex chars (blake3)
-        let a = std::str::from_utf8(&b[0..2]).unwrap_or("00");
-        let c = std::str::from_utf8(&b[2..4]).unwrap_or("00");
-        (a, c)
+        fanout(&self.hex)
     }
 }
 
@@ -96,8 +96,33 @@ pub fn cache_key(url: &str) -> CacheKey {
     }
 }
 
+/// blake3 hex of the canonical URL (owned convenience wrapper).
 pub fn key_hex(url: &str) -> String {
     cache_key(url).hex.clone()
+}
+
+/// 2-level fanout prefix for a hex key string: `("ab", "cd")`.
+///
+/// Shared by [`CacheKey::fanout`] and the disk cache so path layout stays
+/// consistent in one place.
+pub fn fanout(key: &str) -> (&str, &str) {
+    let b = key.as_bytes();
+    if b.len() >= 4 {
+        (
+            std::str::from_utf8(&b[0..2]).unwrap_or("00"),
+            std::str::from_utf8(&b[2..4]).unwrap_or("00"),
+        )
+    } else {
+        ("00", "00")
+    }
+}
+
+/// True when `key` is a 64-char ASCII hex digest (blake3).
+///
+/// Every disk path must call this before touching the filesystem — it is the
+/// hard guard against path traversal via non-hex keys.
+pub fn is_hex_key(key: &str) -> bool {
+    key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 #[cfg(test)]

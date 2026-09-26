@@ -1,4 +1,4 @@
-//! On-the-fly leaf certificates for MITM, cached in a DashMap.
+//! On-the-fly leaf certificates for MITM, cached in a bounded DashMap.
 
 use std::sync::Arc;
 
@@ -8,6 +8,12 @@ use rcgen::{CertificateParams, DistinguishedName, DnType, Issuer, KeyPair, SanTy
 use super::ca::CaMaterial;
 use crate::{Error, Result};
 
+/// Maximum number of host → leaf-cert entries kept in memory.
+///
+/// Prevents unbounded growth when clients probe many SNI names.
+const MAX_CACHED_LEAVES: usize = 512;
+
+/// A leaf certificate (PEM) and private key for one host.
 #[derive(Clone)]
 pub struct LeafCert {
     pub cert_pem: String,
@@ -16,6 +22,7 @@ pub struct LeafCert {
 
 type CaIssuer = Issuer<'static, KeyPair>;
 
+/// Issues and caches leaf certificates signed by the local CA.
 pub struct LeafIssuer {
     issuer: CaIssuer,
     cache: DashMap<String, Arc<LeafCert>>,
@@ -33,9 +40,15 @@ impl LeafIssuer {
         })
     }
 
+    /// Return a cached leaf for `host`, minting and caching one if absent.
     pub fn issue(&self, host: &str) -> Result<Arc<LeafCert>> {
         if let Some(hit) = self.cache.get(host) {
             return Ok(hit.value().clone());
+        }
+        // Bound the cache: drop everything when full (simple, avoids LRU bookkeeping
+        // on a hot path). Hosts are re-minted cheaply on next use.
+        if self.cache.len() >= MAX_CACHED_LEAVES {
+            self.cache.clear();
         }
         let leaf = Arc::new(sign_leaf(&self.issuer, host)?);
         self.cache.insert(host.to_string(), leaf.clone());

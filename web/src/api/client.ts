@@ -1,3 +1,8 @@
+/**
+ * Typed HTTP client for the RustCache REST API.
+ * Every call returns the parsed body or throws `ApiError`.
+ */
+import { ApiError, parseApiError } from "./errors";
 import type {
   CacheInfo,
   Config,
@@ -14,7 +19,7 @@ import type {
 
 async function getJson<T>(url: string): Promise<T> {
   const r = await fetch(url);
-  if (!r.ok) throw new Error(`${url} ${r.status}`);
+  if (!r.ok) throw await parseApiError(url, r);
   return r.json();
 }
 
@@ -24,7 +29,7 @@ async function sendJson<T>(url: string, method: string, body?: unknown): Promise
     headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (!r.ok) throw new Error(`${url} ${r.status}`);
+  if (!r.ok) throw await parseApiError(url, r);
   return r.json();
 }
 
@@ -97,9 +102,11 @@ export function getConfig(): Promise<Config> {
 }
 
 /**
- * Save the full TOML config. Returns the stored config + restart-required fields.
- * Validation failures come back as `{ok: false, error, errors[]}` (not thrown)
- * so the form can highlight the offending fields.
+ * Save the full TOML config.
+ *
+ * Validation failures are returned as a result object (`ok: false` +
+ * `errors[]`) rather than thrown, so the Settings form can highlight fields.
+ * Transport/parse failures still throw `ApiError`.
  */
 export async function updateConfig(body: Config): Promise<ConfigUpdateResult> {
   const r = await fetch("/api/config", {
@@ -107,7 +114,14 @@ export async function updateConfig(body: Config): Promise<ConfigUpdateResult> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  return (await r.json()) as ConfigUpdateResult;
+  const text = await r.text();
+  let parsed: unknown = {};
+  try {
+    parsed = text ? JSON.parse(text) : {};
+  } catch {
+    throw new ApiError(`config ${r.status}`, r.status, "/api/config");
+  }
+  return parsed as ConfigUpdateResult;
 }
 
 export function getNetInfo(): Promise<NetInfo> {
@@ -129,22 +143,11 @@ export function restartProcess(
   return sendJson(dryRun ? "/api/config/restart?dry_run=1" : "/api/config/restart", "POST");
 }
 
+/** Download the root CA PEM. Throws `ApiError` on failure. */
 export async function downloadCa(): Promise<string> {
   const r = await fetch("/api/ca.crt");
-  if (!r.ok) throw new Error(`ca.crt ${r.status}`);
+  if (!r.ok) throw await parseApiError("/api/ca.crt", r);
   return r.text();
 }
 
-export async function caFingerprint(pem: string): Promise<string> {
-  const b64 = pem
-    .replace(/-----BEGIN CERTIFICATE-----/g, "")
-    .replace(/-----END CERTIFICATE-----/g, "")
-    .replace(/\s+/g, "");
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0").toUpperCase())
-    .join(":");
-}
+export type { ApiError, FieldIssue } from "./errors";

@@ -11,89 +11,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getConfig, getHealth, reloadConfig, restartProcess, updateConfig } from "../api/client";
 import type { Config, PacMode } from "../api/types";
+import { Field, PathResolved, SectionTitle } from "../components/settings/fields";
+import {
+  MAX_CLEANUP_INTERVAL_SECS,
+  MAX_LOG_AGE_DAYS,
+  MAX_LOG_ROWS,
+  MIB,
+  RESTART_POLL_MS,
+} from "../lib/constants";
 
 type Form = Config;
-type ApplyMode = "hot" | "restart";
-
-function ApplyBadge({ mode }: { mode: ApplyMode }) {
-  const { t } = useTranslation();
-  const isRestart = mode === "restart";
-  return (
-    <span
-      className={`apply-badge ${isRestart ? "apply-restart" : "apply-hot"}`}
-      title={isRestart ? t("settings.applyRestartTitle") : t("settings.applyHotTitle")}
-    >
-      <i className={isRestart ? "pi pi-refresh" : "pi pi-bolt"} />
-      {isRestart ? t("settings.applyRestart") : t("settings.applyHot")}
-    </span>
-  );
-}
-
-function Field({
-  label,
-  hint,
-  apply,
-  error,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  apply?: ApplyMode;
-  error?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    // biome-ignore lint/a11y/noLabelWithoutControl: label wraps the PrimeReact control
-    <label className={`flex flex-column gap-1 mb-3${error ? " field-has-error" : ""}`}>
-      <span className="field-label-row">
-        <span className="text-color-secondary">{label}</span>
-        {apply ? <ApplyBadge mode={apply} /> : null}
-      </span>
-      {children}
-      {error ? (
-        <small className="field-error" style={{ lineHeight: 1.35 }}>
-          {error}
-        </small>
-      ) : hint ? (
-        <small className="text-color-secondary" style={{ lineHeight: 1.35 }}>
-          {hint}
-        </small>
-      ) : null}
-    </label>
-  );
-}
-
-function SectionTitle({ children }: { children: React.ReactNode }) {
-  return <h3 style={{ marginTop: 0, marginBottom: "0.75rem", fontSize: "1.05rem" }}>{children}</h3>;
-}
-
-/**
- * Mirror of Rust `resolve_under`: relative → under data_dir, absolute/~/ → as-is.
- * Display only; the backend resolves the real paths.
- */
-function resolveUnder(dataDir: string, p: string): string {
-  const s = p.trim();
-  if (s.startsWith("/") || s.startsWith("~")) return s;
-  const base = dataDir.replace(/\/+$/, "");
-  return `${base}/${s}`;
-}
-
-function isAbsolutePath(p: string): boolean {
-  const s = p.trim();
-  return s.startsWith("/") || s.startsWith("~");
-}
-
-function PathResolved({ dataDir, value }: { dataDir: string; value: string }) {
-  const { t } = useTranslation();
-  return (
-    <span className="path-resolved">
-      <span className="tag">
-        {isAbsolutePath(value) ? t("settings.pathAbsolute") : t("settings.pathRelative")}
-      </span>
-      <code>{resolveUnder(dataDir, value)}</code>
-    </span>
-  );
-}
 
 const PAC_MODES: { labelKey: string; value: PacMode }[] = [
   { labelKey: "settings.pacModeHttp", value: "http" },
@@ -105,6 +32,7 @@ function cloneForm(c: Form): Form {
   return JSON.parse(JSON.stringify(c)) as Form;
 }
 
+/** Settings: edit every `config.toml` field with validation and hot/restart apply. */
 export default function Settings() {
   const { t } = useTranslation();
   const [form, setForm] = useState<Form | null>(null);
@@ -139,8 +67,8 @@ export default function Settings() {
     load();
   }, [load]);
 
+  /** Patch the form. Does not wipe validation errors — `save` resets them. */
   const patch = (fn: (f: Form) => Form) => {
-    setFieldErrors({});
     setForm((prev) => (prev ? fn(prev) : prev));
   };
 
@@ -222,7 +150,7 @@ export default function Settings() {
 
   const waitUntilUp = useCallback(async () => {
     for (let i = 0; i < 30; i++) {
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, RESTART_POLL_MS));
       try {
         await getHealth();
         toast.current?.show({
@@ -378,7 +306,7 @@ export default function Settings() {
             error={fieldErrors["cache.max_bytes"]}
           >
             <InputNumber
-              value={Math.round(form.cache.max_bytes / (1024 * 1024))}
+              value={Math.round(form.cache.max_bytes / MIB)}
               min={1}
               max={1_048_576}
               suffix=" MB"
@@ -388,7 +316,7 @@ export default function Settings() {
                   ...f,
                   cache: {
                     ...f.cache,
-                    max_bytes: Math.max(1, e.value ?? 1) * 1024 * 1024,
+                    max_bytes: Math.max(1, e.value ?? 1) * MIB,
                   },
                 }))
               }
@@ -401,7 +329,7 @@ export default function Settings() {
             error={fieldErrors["cache.max_object_bytes"]}
           >
             <InputNumber
-              value={Math.round(form.cache.max_object_bytes / (1024 * 1024))}
+              value={Math.round(form.cache.max_object_bytes / MIB)}
               min={1}
               max={1_048_576}
               suffix=" MB"
@@ -411,7 +339,7 @@ export default function Settings() {
                   ...f,
                   cache: {
                     ...f.cache,
-                    max_object_bytes: Math.max(1, e.value ?? 1) * 1024 * 1024,
+                    max_object_bytes: Math.max(1, e.value ?? 1) * MIB,
                   },
                 }))
               }
@@ -473,7 +401,7 @@ export default function Settings() {
             <InputNumber
               value={form.logs.max_rows}
               min={1}
-              max={10_000_000}
+              max={MAX_LOG_ROWS}
               showButtons
               onValueChange={(e) =>
                 patch((f) => ({
@@ -487,7 +415,7 @@ export default function Settings() {
             <InputNumber
               value={form.logs.max_age_days}
               min={1}
-              max={3650}
+              max={MAX_LOG_AGE_DAYS}
               showButtons
               onValueChange={(e) =>
                 patch((f) => ({
@@ -505,7 +433,7 @@ export default function Settings() {
             <InputNumber
               value={form.logs.cleanup_interval_secs}
               min={10}
-              max={86400}
+              max={MAX_CLEANUP_INTERVAL_SECS}
               showButtons
               onValueChange={(e) =>
                 patch((f) => ({

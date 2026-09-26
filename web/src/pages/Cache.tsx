@@ -3,12 +3,15 @@ import { Card } from "primereact/card";
 import { ConfirmDialog, confirmDialog } from "primereact/confirmdialog";
 import { ProgressBar } from "primereact/progressbar";
 import { Toast } from "primereact/toast";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getCache, getConfig, purgeCache } from "../api/client";
 import type { CacheInfo, Config } from "../api/types";
+import { usePolling } from "../hooks/usePolling";
+import { CACHE_POLL_MS } from "../lib/constants";
 import { fmtBytes } from "../lib/format";
 
+/** Cache: disk usage vs cap and purge action. */
 export default function Cache() {
   const { t } = useTranslation();
   const [info, setInfo] = useState<CacheInfo | null>(null);
@@ -30,11 +33,7 @@ export default function Cache() {
     }
   }, [t]);
 
-  useEffect(() => {
-    load();
-    const id = setInterval(load, 5000);
-    return () => clearInterval(id);
-  }, [load]);
+  usePolling(load, CACHE_POLL_MS);
 
   const maxBytes = cfg?.cache.max_bytes ?? 0;
   const used = info?.bytes ?? 0;

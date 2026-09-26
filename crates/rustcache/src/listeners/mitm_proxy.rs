@@ -1,10 +1,9 @@
 //! HTTPS MITM listener (port 3129).
 //!
-//! CONNECT → rustls server with on-the-fly leaf → HTTP cache path.
+//! CONNECT → rustls server with on-the-fly leaf → shared HTTP cache path.
 //! Excluded hosts are spliced (raw tunnel). Upgrade/WebSocket bypass cache.
 
 use std::sync::Arc;
-use std::time::Instant;
 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -12,12 +11,10 @@ use tokio::net::{TcpListener, TcpStream};
 
 use rustcache_core::certs::leaf::LeafIssuer;
 use rustcache_core::http::fetch::parse_url;
-use rustcache_core::stats::ReqRecord;
 
-use crate::engine::{upstream_tls_connector, CacheEngine, Lookup, SharedEngine};
-use crate::listeners::http_proxy::{
-    cache_headers, entry_age_secs, read_http_request, write_response_to, HttpRequest,
-};
+use crate::engine::{upstream_tls_connector, SharedEngine};
+use crate::listeners::serve::{resolve_cached, RequestContext};
+use crate::listeners::wire::{host_of, read_http_request, write_http_response, HttpRequest};
 
 pub struct MitmState {
     pub engine: SharedEngine,
@@ -71,14 +68,10 @@ async fn handle_conn(mut client: TcpStream, state: MitmState) -> anyhow::Result<
     };
     if !req.method.eq_ignore_ascii_case("CONNECT") {
         // Some clients send absolute-URI https requests to the https proxy port.
-        return handle_plain_http(&mut client, &req, state).await;
+        return handle_plain_http(&mut client, req, state).await;
     }
     let authority = req.target.clone();
-    let host = authority
-        .split(':')
-        .next()
-        .unwrap_or(&authority)
-        .to_string();
+    let host = host_of(&authority).to_string();
 
     if state.denylist.contains_key(&host) {
         tracing::debug!(%host, "mitm denylist → splice");
@@ -130,7 +123,7 @@ async fn handle_conn(mut client: TcpStream, state: MitmState) -> anyhow::Result<
     };
 
     // Serve one HTTP/1.1 request over the MITM stream (Connection: close).
-    let req = match read_http_request_tls(&mut tls_stream).await? {
+    let req = match read_http_request(&mut tls_stream).await? {
         Some(r) => r,
         None => return Ok(()),
     };
@@ -143,8 +136,7 @@ async fn handle_conn(mut client: TcpStream, state: MitmState) -> anyhow::Result<
         return Ok(());
     }
     let url = format!("https://{authority}{}", path_of(&req.target));
-    handle_mitm_request(&mut tls_stream, &req, &url, &host, &state).await?;
-    Ok(())
+    handle_mitm_request(&mut tls_stream, req, url, host, &state).await
 }
 
 fn path_of(target: &str) -> String {
@@ -157,7 +149,7 @@ fn path_of(target: &str) -> String {
 
 async fn handle_plain_http(
     client: &mut TcpStream,
-    req: &HttpRequest,
+    req: HttpRequest,
     state: MitmState,
 ) -> anyhow::Result<()> {
     // Treat as absolute-URI style if possible.
@@ -167,170 +159,26 @@ async fn handle_plain_http(
         format!("https://unknown{}", path_of(&req.target))
     };
     let host = parse_url(&url).map(|u| u.host).unwrap_or_default();
-    handle_mitm_request(client, req, &url, &host, &state).await
+    handle_mitm_request(client, req, url, host, &state).await
 }
 
-async fn handle_mitm_request<W: AsyncWriteExt + Unpin + tokio::io::AsyncRead>(
+async fn handle_mitm_request<W: AsyncWriteExt + Unpin>(
     stream: &mut W,
-    req: &HttpRequest,
-    url: &str,
-    host: &str,
+    req: HttpRequest,
+    url: String,
+    host: String,
     state: &MitmState,
 ) -> anyhow::Result<()> {
-    let started = Instant::now();
-    let engine = &state.engine;
-    let method = req.method.to_uppercase();
-    let is_get_head = method == "GET" || method == "HEAD";
-
-    let outcome;
-    let status: u16;
-    let resp_len: u64;
-
-    if !is_get_head
-        || engine.is_excluded_url(url).await
-        || CacheEngine::request_is_private(&req.headers)
-    {
-        engine.metrics().add_bypass();
-        outcome = "BYPASS";
-        let tls = upstream_tls_connector();
-        match engine
-            .fetcher
-            .fetch(
-                &method,
-                url,
-                &req.headers,
-                if req.body.is_empty() {
-                    None
-                } else {
-                    Some(req.body.as_slice())
-                },
-                Some(tls),
-                engine.max_object_bytes(),
-            )
-            .await
-        {
-            Ok(r) => {
-                let headers = cache_headers(&r.headers, "BYPASS", None);
-                write_response_to(stream, r.status, &headers, &r.body).await?;
-                status = r.status;
-                resp_len = r.body.len() as u64;
-                engine.metrics().add_served(resp_len);
-            }
-            Err(e) => {
-                engine.metrics().add_error();
-                let headers = cache_headers(&[], "ERROR", None);
-                write_response_to(stream, 502, &headers, e.to_string().as_bytes()).await?;
-                status = 502;
-                resp_len = 0;
-            }
-        }
-    } else {
-        let lookup = engine.lookup(url).await;
-        let tls = upstream_tls_connector();
-        match lookup {
-            Lookup::Hit(entry) => {
-                engine.metrics().add_hit(entry.body.len() as u64);
-                let body: &[u8] = if method.eq_ignore_ascii_case("HEAD") {
-                    &[]
-                } else {
-                    &entry.body
-                };
-                let headers = cache_headers(
-                    &entry.meta.headers,
-                    "HIT",
-                    Some(entry_age_secs(entry.meta.stored_at)),
-                );
-                write_response_to(stream, entry.meta.status, &headers, body).await?;
-                status = entry.meta.status;
-                resp_len = body.len() as u64;
-                outcome = "HIT";
-                engine.metrics().add_served(resp_len);
-            }
-            Lookup::Revalidate { entry } => {
-                match engine
-                    .fetch_and_store(&method, url, &req.headers, None, Some(tls), Some(&entry))
-                    .await
-                {
-                    Ok(new_entry) => {
-                        if new_entry.body == entry.body {
-                            engine.metrics().add_hit(new_entry.body.len() as u64);
-                            outcome = "HIT_REVALIDATED";
-                        } else {
-                            engine.metrics().add_miss();
-                            outcome = "REVALIDATED";
-                        }
-                        let body: &[u8] = if method.eq_ignore_ascii_case("HEAD") {
-                            &[]
-                        } else {
-                            &new_entry.body
-                        };
-                        let headers = cache_headers(
-                            &new_entry.meta.headers,
-                            outcome,
-                            Some(entry_age_secs(new_entry.meta.stored_at)),
-                        );
-                        write_response_to(stream, new_entry.meta.status, &headers, body).await?;
-                        status = new_entry.meta.status;
-                        resp_len = body.len() as u64;
-                        engine.metrics().add_served(resp_len);
-                    }
-                    Err(e) => {
-                        engine.metrics().add_error();
-                        let headers = cache_headers(&[], "ERROR", None);
-                        write_response_to(stream, 502, &headers, e.to_string().as_bytes()).await?;
-                        status = 502;
-                        resp_len = 0;
-                        outcome = "ERROR";
-                    }
-                }
-            }
-            Lookup::Miss => {
-                match engine
-                    .fetch_and_store(&method, url, &req.headers, None, Some(tls), None)
-                    .await
-                {
-                    Ok(entry) => {
-                        engine.metrics().add_miss();
-                        let body: &[u8] = if method.eq_ignore_ascii_case("HEAD") {
-                            &[]
-                        } else {
-                            &entry.body
-                        };
-                        let headers = cache_headers(
-                            &entry.meta.headers,
-                            "MISS",
-                            Some(entry_age_secs(entry.meta.stored_at)),
-                        );
-                        write_response_to(stream, entry.meta.status, &headers, body).await?;
-                        status = entry.meta.status;
-                        resp_len = body.len() as u64;
-                        outcome = "MISS";
-                        engine.metrics().add_served(resp_len);
-                    }
-                    Err(e) => {
-                        engine.metrics().add_error();
-                        let headers = cache_headers(&[], "ERROR", None);
-                        write_response_to(stream, 502, &headers, e.to_string().as_bytes()).await?;
-                        status = 502;
-                        resp_len = 0;
-                        outcome = "ERROR";
-                    }
-                }
-            }
-        }
-    }
-
-    engine.record(ReqRecord {
-        ts: rustcache_core::cache::meta::now_ms(),
-        method,
-        url: url.into(),
-        host: host.into(),
-        status,
-        outcome: outcome.into(),
-        duration_ms: started.elapsed().as_millis() as u64,
-        resp_bytes: resp_len,
-    });
-    Ok(())
+    let ctx = RequestContext {
+        method: req.method.to_uppercase(),
+        url,
+        host,
+        headers: req.headers,
+        body: req.body,
+        started: std::time::Instant::now(),
+    };
+    let out = resolve_cached(&state.engine, &ctx, Some(upstream_tls_connector())).await?;
+    write_http_response(stream, out.status, &out.headers, &out.body, true).await
 }
 
 async fn splice_raw(
@@ -355,7 +203,7 @@ async fn pipe_upgrade<S: AsyncReadExt + AsyncWriteExt + Unpin>(
     authority: &str,
 ) -> anyhow::Result<()> {
     // Connect to the CONNECT authority over TLS and pipe the upgraded connection.
-    let host = authority.split(':').next().unwrap_or(authority).to_string();
+    let host = host_of(authority).to_string();
     let tcp = TcpStream::connect(authority).await?;
     let connector = upstream_tls_connector();
     let domain =
@@ -376,64 +224,6 @@ async fn pipe_upgrade<S: AsyncReadExt + AsyncWriteExt + Unpin>(
     let _ = tokio::io::copy_bidirectional(client, &mut upstream).await?;
     state.engine.metrics().add_bypass();
     Ok(())
-}
-
-async fn read_http_request_tls<S: AsyncReadExt + Unpin>(
-    stream: &mut S,
-) -> anyhow::Result<Option<HttpRequest>> {
-    let mut buf = Vec::with_capacity(8192);
-    let mut tmp = [0u8; 8192];
-    let header_end = loop {
-        let n = stream.read(&mut tmp).await?;
-        if n == 0 {
-            return if buf.is_empty() {
-                Ok(None)
-            } else {
-                Err(anyhow::anyhow!("eof mid-headers"))
-            };
-        }
-        buf.extend_from_slice(&tmp[..n]);
-        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-            break i;
-        }
-        if buf.len() > 64 * 1024 {
-            return Err(anyhow::anyhow!("headers too large"));
-        }
-    };
-    let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
-    let mut rest = buf[header_end + 4..].to_vec();
-    let mut lines = head.split("\r\n");
-    let start = lines.next().unwrap_or_default();
-    let mut parts = start.split_whitespace();
-    let method = parts.next().unwrap_or_default().to_string();
-    let target = parts.next().unwrap_or_default().to_string();
-    let _version = parts.next().unwrap_or("HTTP/1.1");
-    let mut headers = Vec::new();
-    let mut content_length = 0usize;
-    for line in lines {
-        if let Some((k, v)) = line.split_once(':') {
-            let k = k.trim().to_string();
-            let v = v.trim().to_string();
-            if k.eq_ignore_ascii_case("content-length") {
-                content_length = v.parse().unwrap_or(0);
-            }
-            headers.push((k, v));
-        }
-    }
-    while rest.len() < content_length {
-        let n = stream.read(&mut tmp).await?;
-        if n == 0 {
-            break;
-        }
-        rest.extend_from_slice(&tmp[..n]);
-    }
-    let body = rest.into_iter().take(content_length).collect();
-    Ok(Some(HttpRequest {
-        method,
-        target,
-        headers,
-        body,
-    }))
 }
 
 fn pem_to_der_cert(pem: &str) -> anyhow::Result<CertificateDer<'static>> {

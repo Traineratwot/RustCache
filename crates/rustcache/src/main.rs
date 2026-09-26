@@ -12,11 +12,10 @@ use rustcache_core::certs::ca::{export_pem, generate_ca, load_ca};
 use rustcache_core::certs::leaf::LeafIssuer;
 use rustcache_core::excl::ExclusionSet;
 
-use rustcache::api::{pac_router, router, ApiState};
+use rustcache::api::{router, ApiState};
 use rustcache::config::watch::LiveConfig;
 use rustcache::config::Config;
 use rustcache::engine::CacheEngine;
-use rustcache::listeners;
 
 #[derive(Parser, Debug)]
 #[command(name = "rustcache", version, about = "Caching proxy server")]
@@ -112,31 +111,8 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-/// After a UI-triggered self-restart the previous process may still hold the
-/// listening sockets. Wait until it exits (Linux `/proc`) plus a short grace.
-fn wait_for_restart_parent() {
-    let Ok(v) = std::env::var("RUSTCACHE_RESTARTED_FROM") else {
-        return;
-    };
-    let Ok(pid) = v.parse::<u32>() else {
-        return;
-    };
-    tracing::info!(parent = pid, "waiting for previous process to exit");
-    for _ in 0..100 {
-        if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    tracing::warn!(
-        parent = pid,
-        "previous process still running after wait; continuing"
-    );
-}
-
 async fn run(config_path: PathBuf, data_dir: Option<PathBuf>) -> anyhow::Result<()> {
-    wait_for_restart_parent();
+    rustcache::startup::wait_for_restart_parent();
     let mut cfg = Config::load_or_default(&config_path)?;
     cfg.apply_data_dir_override(data_dir.as_deref());
     let cache_dir = cfg.cache_dir();
@@ -198,7 +174,7 @@ async fn run(config_path: PathBuf, data_dir: Option<PathBuf>) -> anyhow::Result<
                 if let Some(cfg) = cfg {
                     tracing::info!("config reloaded");
                     let set = ExclusionSet::from_specs(&cfg.exclude.domains, &cfg.exclude.cidrs);
-                    *engine.exclusions.write().await = set;
+                    engine.set_exclusions(set).await;
                     engine.set_cache_limits(cfg.cache.max_object_bytes, cfg.cache.max_bytes);
                     live.set(cfg).await;
                 }
@@ -230,15 +206,7 @@ async fn run(config_path: PathBuf, data_dir: Option<PathBuf>) -> anyhow::Result<
         });
     }
 
-    let http_addr: std::net::SocketAddr = format!("0.0.0.0:{}", cfg.http.port).parse()?;
-    let https_addr: std::net::SocketAddr = format!("0.0.0.0:{}", cfg.https.port).parse()?;
-    let socks_addr: std::net::SocketAddr = format!("0.0.0.0:{}", cfg.socks5.port).parse()?;
     let api_addr = cfg.api.bind.clone();
-
-    let engine_http = engine.clone();
-    let engine_https = engine.clone();
-    let engine_socks = engine.clone();
-    let leaves_mitm = leaves.clone();
 
     let api_router = router(state.clone());
 
@@ -248,97 +216,11 @@ async fn run(config_path: PathBuf, data_dir: Option<PathBuf>) -> anyhow::Result<
     let listener = tokio::net::TcpListener::bind(&api_addr).await?;
     tracing::info!(addr = %api_addr, "api listening");
 
-    // Bind proxy ports up front so a conflict (e.g. http.port == https.port)
-    // is visible in health instead of one task dying silently.
-    let http_listener = match tokio::net::TcpListener::bind(http_addr).await {
-        Ok(l) => {
-            state.listeners.set_http(true);
-            Some(l)
-        }
-        Err(e) => {
-            tracing::error!(error = %e, addr = %http_addr, "http listener bind failed");
-            state.listeners.set_http(false);
-            None
-        }
-    };
-    let https_listener = match tokio::net::TcpListener::bind(https_addr).await {
-        Ok(l) => {
-            state.listeners.set_https(true);
-            Some(l)
-        }
-        Err(e) => {
-            tracing::error!(error = %e, addr = %https_addr, "mitm listener bind failed");
-            state.listeners.set_https(false);
-            None
-        }
-    };
-    let socks_listener = match tokio::net::TcpListener::bind(socks_addr).await {
-        Ok(l) => {
-            state.listeners.set_socks5(true);
-            Some(l)
-        }
-        Err(e) => {
-            tracing::error!(error = %e, addr = %socks_addr, "socks5 listener bind failed");
-            state.listeners.set_socks5(false);
-            None
-        }
-    };
-
-    // Optional dedicated LAN listener that serves only the two PAC paths.
-    let pac_srv = if cfg.pac.enabled {
-        let pac_addr = cfg.pac.bind.clone();
-        let pac_state = state.clone();
-        match tokio::net::TcpListener::bind(&pac_addr).await {
-            Ok(pac_listener) => {
-                state.listeners.set_pac(true);
-                tracing::info!(addr = %pac_addr, "pac listener listening");
-                Some(tokio::spawn(async move {
-                    if let Err(e) = axum::serve(pac_listener, pac_router(pac_state)).await {
-                        tracing::error!(error = %e, "pac listener failed");
-                    }
-                }))
-            }
-            Err(e) => {
-                tracing::error!(error = %e, addr = %pac_addr, "pac listener bind failed");
-                state.listeners.set_pac(false);
-                None
-            }
-        }
-    } else {
-        state.listeners.set_pac(false);
-        None
-    };
-
-    let http_srv = tokio::spawn(async move {
-        if let Some(l) = http_listener {
-            if let Err(e) = listeners::http_proxy::serve(l, engine_http).await {
-                tracing::error!(error = %e, "http listener failed");
-            }
-        }
-    });
-    let https_srv = tokio::spawn(async move {
-        if let Some(l) = https_listener {
-            if let Err(e) = listeners::mitm_proxy::serve(l, engine_https, leaves_mitm).await {
-                tracing::error!(error = %e, "mitm listener failed");
-            }
-        }
-    });
-    let socks_srv = tokio::spawn(async move {
-        if let Some(l) = socks_listener {
-            if let Err(e) = listeners::socks5::serve(l, engine_socks).await {
-                tracing::error!(error = %e, "socks5 listener failed");
-            }
-        }
-    });
+    let tasks = rustcache::startup::bring_up_listeners(&cfg, &state, &engine, &leaves).await;
 
     tracing::info!("RustCache started");
     axum::serve(listener, api_router).await?;
 
-    http_srv.abort();
-    https_srv.abort();
-    socks_srv.abort();
-    if let Some(s) = pac_srv {
-        s.abort();
-    }
+    tasks.abort();
     Ok(())
 }

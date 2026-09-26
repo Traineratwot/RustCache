@@ -315,11 +315,6 @@ impl Config {
     pub fn logs_db_path(&self) -> PathBuf {
         resolve_under(&self.data_dir_path(), &self.logs.db_path)
     }
-
-    /// Redacted copy safe for `/api/config`.
-    pub fn redacted(&self) -> Config {
-        self.clone()
-    }
 }
 
 #[cfg(test)]

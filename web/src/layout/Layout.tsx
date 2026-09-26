@@ -21,6 +21,7 @@ const navKeys: {
   { to: "/ca", icon: "pi pi-shield", key: "ca" },
 ];
 
+/** App shell: sidebar nav, theme and language switchers. */
 export default function Layout({ children }: { children: ReactNode }) {
   const { t } = useTranslation();
   const { themeMode, setThemeMode, langMode, resolvedLang, setLangMode } = usePrefs();

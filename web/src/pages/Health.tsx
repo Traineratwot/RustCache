@@ -4,10 +4,12 @@ import { Card } from "primereact/card";
 import { Column } from "primereact/column";
 import { DataTable } from "primereact/datatable";
 import { Tag } from "primereact/tag";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getHealth } from "../api/client";
 import type { HealthInfo, ListenerInfo } from "../api/types";
+import { usePolling } from "../hooks/usePolling";
+import { DEFAULT_PORTS, HEALTH_POLL_MS } from "../lib/constants";
 import { fmtUptime } from "../lib/format";
 
 function RunningBadge({ running }: { running: boolean }) {
@@ -19,6 +21,7 @@ function RunningBadge({ running }: { running: boolean }) {
   );
 }
 
+/** Health: listener bind status and API uptime. */
 export default function Health() {
   const { t } = useTranslation();
   const [health, setHealth] = useState<HealthInfo | null>(null);
@@ -34,11 +37,7 @@ export default function Health() {
     }
   }, [t]);
 
-  useEffect(() => {
-    load();
-    const id = setInterval(load, 3000);
-    return () => clearInterval(id);
-  }, [load]);
+  usePolling(load, HEALTH_POLL_MS);
 
   const listeners = health?.listeners ?? [];
   const allOk = listeners.every((l) => l.running);
@@ -96,7 +95,11 @@ export default function Health() {
             header={t("health.service")}
             body={(l: ListenerInfo) => <span className="font-medium">{l.name}</span>}
           />
-          <Column field="bind" header="Bind" body={(l: ListenerInfo) => <code>{l.bind}</code>} />
+          <Column
+            field="bind"
+            header={t("health.bind")}
+            body={(l: ListenerInfo) => <code>{l.bind}</code>}
+          />
           <Column
             field="port"
             header={t("health.port")}
@@ -116,13 +119,13 @@ export default function Health() {
 
       <Card title={t("health.defaultPorts")} className="mt-3">
         <p style={{ marginTop: 0 }}>
-          <Tag value="3128" severity="info" /> {t("health.portHttp")}
+          <Tag value={String(DEFAULT_PORTS.http)} severity="info" /> {t("health.portHttp")}
           <br />
-          <Tag value="3129" severity="info" /> {t("health.portHttps")}
+          <Tag value={String(DEFAULT_PORTS.https)} severity="info" /> {t("health.portHttps")}
           <br />
-          <Tag value="1080" severity="secondary" /> {t("health.portSocks")}
+          <Tag value={String(DEFAULT_PORTS.socks5)} severity="secondary" /> {t("health.portSocks")}
           <br />
-          <Tag value="8080" severity="success" /> {t("health.portApi")}
+          <Tag value={String(DEFAULT_PORTS.api)} severity="success" /> {t("health.portApi")}
         </p>
       </Card>
     </>

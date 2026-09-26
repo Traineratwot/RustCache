@@ -25,6 +25,7 @@ const kindSeverity: Record<string, "info" | "success" | "warning" | "secondary">
   cidr: "warning",
 };
 
+/** Exclusions: manage domain/CIDR rules that bypass the cache. */
 export default function Exclusions() {
   const { t } = useTranslation();
   const [items, setItems] = useState<Matcher[]>([]);

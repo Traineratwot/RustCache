@@ -1,6 +1,6 @@
 //! HTTP cache-policy evaluation: Cache-Control, Expires, ETag, Vary, status.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use crate::cache::meta::CacheMeta;
 
@@ -230,10 +230,7 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
 }
 
 fn now_secs_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    crate::cache::meta::now_ms()
 }
 
 #[cfg(test)]

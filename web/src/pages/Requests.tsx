@@ -10,25 +10,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { clearRequests, getRequests } from "../api/client";
 import type { ReqRecord, RequestQuery } from "../api/types";
+import { useDebounced } from "../hooks/useDebounced";
+import { usePolling } from "../hooks/usePolling";
+import { REQUESTS_POLL_MS } from "../lib/constants";
 import { fmtBytes, fmtDateTime } from "../lib/format";
-
-function outcomeSeverity(outcome: string): "success" | "info" | "warning" | "danger" | "secondary" {
-  switch (outcome) {
-    case "HIT":
-    case "HIT_REVALIDATED":
-      return "success";
-    case "MISS":
-    case "REVALIDATED":
-      return "info";
-    case "BYPASS":
-    case "REJECT_CMD":
-      return "warning";
-    case "TUNNEL":
-      return "secondary";
-    default:
-      return "danger";
-  }
-}
+import { outcomeSeverity } from "../lib/outcome";
 
 function statusRange(code: string): { status_min?: number; status_max?: number } {
   if (!code) return {};
@@ -53,6 +39,7 @@ function timeSince(key: string): number | undefined {
   }
 }
 
+/** Requests: filterable, paginated traffic history with auto-refresh. */
 export default function Requests() {
   const { t } = useTranslation();
   const [rows, setRows] = useState<ReqRecord[]>([]);
@@ -125,10 +112,13 @@ export default function Requests() {
     [t],
   );
 
+  // Debounce free-text search so typing does not fire one request per keystroke.
+  const debouncedQ = useDebounced(q, 300);
+
   const load = useCallback(async () => {
     const seq = ++reqSeq.current;
     const query: RequestQuery = {
-      q: q.trim() || undefined,
+      q: debouncedQ.trim() || undefined,
       method: method || undefined,
       outcome: outcome || undefined,
       ...statusRange(statusCls),
@@ -146,20 +136,14 @@ export default function Requests() {
       if (seq !== reqSeq.current) return;
       setError(t("requests.loadError"));
     }
-  }, [q, method, outcome, statusCls, timeRange, limit, offset, t]);
+  }, [debouncedQ, method, outcome, statusCls, timeRange, limit, offset, t]);
 
   useEffect(() => {
     void reloadTick;
     load();
   }, [load, reloadTick]);
 
-  useEffect(() => {
-    if (!autoRefresh) return;
-    const id = setInterval(() => {
-      void load();
-    }, 2000);
-    return () => clearInterval(id);
-  }, [autoRefresh, load]);
+  usePolling(load, REQUESTS_POLL_MS, autoRefresh);
 
   const onFilterChange = (setter: (v: string) => void) => (value: unknown) => {
     setter(String(value ?? ""));
@@ -295,7 +279,7 @@ export default function Requests() {
           style={{ width: "140px" }}
         />
         <Column field="method" header={t("requests.method")} style={{ width: "80px" }} />
-        <Column field="host" header="Host" style={{ width: "180px" }} />
+        <Column field="host" header={t("requests.host")} style={{ width: "180px" }} />
         <Column
           field="url"
           header={t("requests.url")}

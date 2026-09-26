@@ -9,6 +9,7 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import { Trans, useTranslation } from "react-i18next";
 import { getConfig, getNetInfo, getPac } from "../api/client";
 import type { Config, PacInfo } from "../api/types";
+import { DEFAULT_PORTS } from "../lib/constants";
 
 function Code({ children }: { children: string }) {
   return (
@@ -85,6 +86,7 @@ async function detectExternalIp(): Promise<string | null> {
   return null;
 }
 
+/** Connect: client setup instructions and detected LAN/external IPs. */
 export default function Connect() {
   const { t } = useTranslation();
   const [cfg, setCfg] = useState<Config | null>(null);
@@ -134,11 +136,11 @@ export default function Connect() {
       });
   };
 
-  const httpPort = cfg?.http.port ?? 3128;
-  const httpsPort = cfg?.https.port ?? 3129;
-  const socksPort = cfg?.socks5.port ?? 1080;
+  const httpPort = cfg?.http.port ?? DEFAULT_PORTS.http;
+  const httpsPort = cfg?.https.port ?? DEFAULT_PORTS.https;
+  const socksPort = cfg?.socks5.port ?? DEFAULT_PORTS.socks5;
   const ip = selectedIp;
-  const pacPort = pac?.port ?? 8081;
+  const pacPort = pac?.port ?? DEFAULT_PORTS.pac;
   const pacUrl = `http://${ip}:${pacPort}/proxy.pac`;
   const pacModeLabel =
     pac?.mode === "http"

@@ -97,6 +97,7 @@
     "hasIssues": "Issues detected",
     "listeners": "Listeners",
     "service": "Service",
+    "bind": "Bind",
     "port": "Port",
     "status": "Status",
     "running": "Running",

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
+use super::key::{fanout, is_hex_key};
 use super::meta::{now_ms, CacheMeta};
 use crate::{Error, Result};
 
@@ -200,22 +201,6 @@ impl DiskCache {
         }
         Ok(out)
     }
-}
-
-fn fanout(key: &str) -> (&str, &str) {
-    let b = key.as_bytes();
-    if b.len() >= 4 {
-        (
-            std::str::from_utf8(&b[0..2]).unwrap_or("00"),
-            std::str::from_utf8(&b[2..4]).unwrap_or("00"),
-        )
-    } else {
-        ("00", "00")
-    }
-}
-
-fn is_hex_key(key: &str) -> bool {
-    key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 async fn write_atomic(tmp: &Path, final_path: &Path, data: &[u8]) -> Result<()> {

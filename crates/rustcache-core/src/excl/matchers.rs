@@ -3,26 +3,42 @@
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
+/// One exclusion rule. Variants map to config syntax (`*.example.com`, `.com`, CIDR, bare host).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Matcher {
-    Exact { value: String },
-    Wildcard { value: String },
-    Suffix { value: String },
-    Cidr { value: String },
+    Exact {
+        value: String,
+    },
+    Wildcard {
+        value: String,
+    },
+    Suffix {
+        value: String,
+    },
+    Cidr {
+        value: String,
+        /// Parsed form of `value`, filled on first IP match (avoids re-parsing).
+        #[serde(skip)]
+        net: OnceLock<IpNet>,
+    },
 }
 
 impl Matcher {
+    /// Parse a single exclusion spec into one or more matchers.
     pub fn parse(spec: &str) -> Vec<Matcher> {
         let s = spec.trim();
         if s.is_empty() {
             return vec![];
         }
-        if s.contains('/') && s.parse::<IpNet>().is_ok() {
+        if let Ok(net) = s.parse::<IpNet>() {
+            let slot = OnceLock::new();
+            let _ = slot.set(net);
             return vec![Matcher::Cidr {
                 value: s.to_string(),
+                net: slot,
             }];
         }
         if let Some(rest) = s.strip_prefix("*.") {
@@ -65,10 +81,19 @@ impl Matcher {
 
     pub fn matches_ip(&self, ip: IpAddr) -> bool {
         match self {
-            Matcher::Cidr { value } => match value.parse::<IpNet>() {
-                Ok(net) => net.contains(&ip),
-                Err(_) => false,
-            },
+            Matcher::Cidr { value, net } => {
+                if let Some(parsed) = net.get() {
+                    return parsed.contains(&ip);
+                }
+                match value.parse::<IpNet>() {
+                    Ok(parsed) => {
+                        let contains = parsed.contains(&ip);
+                        let _ = net.set(parsed);
+                        contains
+                    }
+                    Err(_) => false,
+                }
+            }
             _ => false,
         }
     }
@@ -88,7 +113,10 @@ impl Matcher {
     }
 }
 
-/// Hot-swappable set of exclusions.
+/// Hot-swappable set of exclusions (domains + CIDRs).
+///
+/// Hold this behind an `Arc` / `RwLock` at the call site to hot-reload;
+/// the set itself is immutable after construction.
 #[derive(Debug, Clone, Default)]
 pub struct ExclusionSet {
     matchers: Arc<Vec<Matcher>>,
@@ -124,16 +152,6 @@ impl ExclusionSet {
 
     pub fn matchers(&self) -> &[Matcher] {
         &self.matchers
-    }
-
-    pub fn swap(&self, other: ExclusionSet) -> ExclusionSet {
-        // convenience: return old
-        let old = Self {
-            matchers: self.matchers.clone(),
-        };
-        // interior mutation via Arc is not available — callers should hold ArcSwap externally
-        let _ = other;
-        old
     }
 }
 

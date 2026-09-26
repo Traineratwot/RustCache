@@ -66,13 +66,12 @@ pub struct ApiState {
 
 impl ApiState {
     pub async fn exclusions(&self) -> Vec<Matcher> {
-        self.engine.exclusions.read().await.matchers().to_vec()
+        self.engine.exclusion_matchers().await
     }
 
     pub async fn set_exclusions(&self, domains: Vec<String>, cidrs: Vec<String>) -> ExclusionSet {
         let set = ExclusionSet::from_specs(&domains, &cidrs);
-        let mut guard = self.engine.exclusions.write().await;
-        *guard = set.clone();
+        self.engine.set_exclusions(set.clone()).await;
         set
     }
 
@@ -85,7 +84,7 @@ impl ApiState {
 
     pub async fn apply_config(&self, cfg: Config) -> anyhow::Result<()> {
         let set = ExclusionSet::from_specs(&cfg.exclude.domains, &cfg.exclude.cidrs);
-        *self.engine.exclusions.write().await = set;
+        self.engine.set_exclusions(set).await;
         self.engine
             .set_cache_limits(cfg.cache.max_object_bytes, cfg.cache.max_bytes);
         Ok(())

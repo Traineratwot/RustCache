@@ -9,6 +9,7 @@ import Health from "./pages/Health";
 import Requests from "./pages/Requests";
 import Settings from "./pages/Settings";
 
+/** Route table for the SPA. */
 export default function App() {
   return (
     <Layout>

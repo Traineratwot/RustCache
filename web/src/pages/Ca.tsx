@@ -4,8 +4,10 @@ import { Message } from "primereact/message";
 import { Toast } from "primereact/toast";
 import { useEffect, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
-import { caFingerprint, downloadCa } from "../api/client";
+import { downloadCa } from "../api/client";
+import { caFingerprint } from "../lib/crypto";
 
+/** CA: show root cert fingerprint and download `ca.crt` for trust install. */
 export default function Ca() {
   const { t } = useTranslation();
   const [fingerprint, setFingerprint] = useState<string | null>(null);

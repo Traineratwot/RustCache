@@ -21,8 +21,15 @@ pub fn spawn_watcher(
                 event.kind,
                 EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
             ) {
-                if let Ok(cfg) = Config::load(&watch_path) {
-                    let _ = tx.send(Some(cfg));
+                match Config::load(&watch_path) {
+                    Ok(cfg) => {
+                        if tx.send(Some(cfg)).is_err() {
+                            tracing::debug!("config watcher: receiver dropped");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "config reload failed; keeping previous config");
+                    }
                 }
             }
         }
@@ -32,23 +39,26 @@ pub fn spawn_watcher(
 }
 
 /// Shared live config holder.
+///
+/// Stores `Arc<Config>` so hot readers avoid cloning the whole config tree.
 #[derive(Clone)]
 pub struct LiveConfig {
-    inner: Arc<tokio::sync::RwLock<Config>>,
+    inner: Arc<tokio::sync::RwLock<Arc<Config>>>,
 }
 
 impl LiveConfig {
     pub fn new(cfg: Config) -> Self {
         Self {
-            inner: Arc::new(tokio::sync::RwLock::new(cfg)),
+            inner: Arc::new(tokio::sync::RwLock::new(Arc::new(cfg))),
         }
     }
 
-    pub async fn get(&self) -> Config {
+    /// Snapshot of the current config (cheap `Arc` clone).
+    pub async fn get(&self) -> Arc<Config> {
         self.inner.read().await.clone()
     }
 
     pub async fn set(&self, cfg: Config) {
-        *self.inner.write().await = cfg;
+        *self.inner.write().await = Arc::new(cfg);
     }
 }

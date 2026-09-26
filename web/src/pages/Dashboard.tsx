@@ -10,25 +10,8 @@ import { useTranslation } from "react-i18next";
 import { getLogStats } from "../api/client";
 import type { HostStat, LogStats, OutcomeStat, SeriesPoint } from "../api/types";
 import { fmtBucket, fmtBytes, fmtDate, fmtMs, fmtTime } from "../lib/format";
+import { outcomeSeverity } from "../lib/outcome";
 import { usePrefs } from "../prefs/PrefsContext";
-
-function outcomeSeverity(outcome: string): "success" | "info" | "warning" | "danger" | "secondary" {
-  switch (outcome) {
-    case "HIT":
-    case "HIT_REVALIDATED":
-      return "success";
-    case "MISS":
-    case "REVALIDATED":
-      return "info";
-    case "BYPASS":
-    case "REJECT_CMD":
-      return "warning";
-    case "TUNNEL":
-      return "secondary";
-    default:
-      return "danger";
-  }
-}
 
 function StatCard({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
   return (
@@ -88,6 +71,7 @@ function useChartTheme() {
   }, [resolvedTheme]);
 }
 
+/** Dashboard: request-log stats, charts (hit rate, outcomes, top hosts). */
 export default function Dashboard() {
   const { t } = useTranslation();
   const chartTheme = useChartTheme();
@@ -112,26 +96,29 @@ export default function Dashboard() {
     load();
   }, [load]);
 
-  const chartOptions = {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: {
-      legend: { position: "bottom" as const, labels: { color: chartTheme.color } },
-    },
-    scales: {
-      x: {
-        stacked: true,
-        ticks: { maxTicksLimit: 12, color: chartTheme.color },
-        grid: { color: chartTheme.border },
+  const chartOptions = useMemo(
+    () => ({
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: "bottom" as const, labels: { color: chartTheme.color } },
       },
-      y: {
-        stacked: true,
-        beginAtZero: true,
-        ticks: { color: chartTheme.color },
-        grid: { color: chartTheme.border },
+      scales: {
+        x: {
+          stacked: true,
+          ticks: { maxTicksLimit: 12, color: chartTheme.color },
+          grid: { color: chartTheme.border },
+        },
+        y: {
+          stacked: true,
+          beginAtZero: true,
+          ticks: { color: chartTheme.color },
+          grid: { color: chartTheme.border },
+        },
       },
-    },
-  };
+    }),
+    [chartTheme],
+  );
 
   const header = (
     <div className="page-header">

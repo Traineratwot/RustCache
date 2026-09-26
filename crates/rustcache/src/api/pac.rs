@@ -68,7 +68,7 @@ fn matcher_to_js(m: &Matcher) -> Option<String> {
             "    if (host === \"{v}\" || dnsDomainIs(host, \".{v}\")) return \"DIRECT\";\n",
             v = js_escape(value)
         )),
-        Matcher::Cidr { value } => {
+        Matcher::Cidr { value, .. } => {
             let mask = cidr_to_netmask(value)?;
             let net = value.split('/').next().unwrap_or("");
             Some(format!(
@@ -208,18 +208,14 @@ mod tests {
 
     #[test]
     fn cidr_matcher_uses_is_in_net() {
-        let ms = vec![Matcher::Cidr {
-            value: "10.0.0.0/8".into(),
-        }];
+        let ms = Matcher::parse("10.0.0.0/8");
         let pac = generate_pac(&params(PacMode::Http, &ms));
         assert!(pac.contains("isInNet(_ip, \"10.0.0.0\", \"255.0.0.0\")"));
     }
 
     #[test]
     fn ipv6_cidr_skipped() {
-        let ms = vec![Matcher::Cidr {
-            value: "fd00::/8".into(),
-        }];
+        let ms = Matcher::parse("fd00::/8");
         let pac = generate_pac(&params(PacMode::Http, &ms));
         assert!(!pac.contains("isInNet"));
         assert!(pac.contains("return \"PROXY"));

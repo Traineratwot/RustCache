@@ -1,40 +1,88 @@
 //! In-memory cache (moka) with body-len weigher. Disk remains source of truth.
+//!
+//! Freshness at read time is governed by [`CacheMeta::is_fresh`] (`expires_at`).
+//! The optional per-entry `ttl` is only an upper bound on how long the entry is
+//! held in memory; it never makes a stale entry look fresh.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use moka::future::Cache as Moka;
+use moka::Expiry;
 
 use super::meta::CacheMeta;
 use crate::Result;
 
+/// A cached HTTP response body plus the metadata describing it.
 #[derive(Clone)]
 pub struct CachedEntry {
     pub meta: CacheMeta,
     pub body: Arc<Vec<u8>>,
 }
 
+/// Value stored in moka: the entry plus its optional memory TTL.
+#[derive(Clone)]
+struct MemValue {
+    entry: CachedEntry,
+    ttl: Option<Duration>,
+}
+
+/// Per-entry expiry so `insert(..., ttl)` is honored by moka.
+///
+/// Returning `None` leaves the entry under the cache-level `time_to_idle`
+/// policy only.
+struct MemExpiry;
+
+impl Expiry<String, MemValue> for MemExpiry {
+    fn expire_after_create(
+        &self,
+        _key: &String,
+        value: &MemValue,
+        _created_at: std::time::Instant,
+    ) -> Option<Duration> {
+        value.ttl
+    }
+
+    fn expire_after_update(
+        &self,
+        _key: &String,
+        value: &MemValue,
+        _updated_at: std::time::Instant,
+        _prev: Option<Duration>,
+    ) -> Option<Duration> {
+        value.ttl
+    }
+}
+
+/// In-memory hot cache. Not a source of truth — bodies are also on disk.
 pub struct MemCache {
-    inner: Moka<String, CachedEntry>,
+    inner: Moka<String, MemValue>,
 }
 
 impl MemCache {
     pub fn new(max_bytes: u64) -> Self {
         let inner = Moka::builder()
-            .weigher(|_, v: &CachedEntry| (v.meta.body_len as u32).max(1))
+            .weigher(|_, v: &MemValue| (v.entry.meta.body_len as u32).max(1))
             .max_capacity(max_bytes.max(1))
             .time_to_idle(Duration::from_secs(3600))
+            .expire_after(MemExpiry)
             .build();
         Self { inner }
     }
 
+    /// Look up a cached entry by cache key. Returns `None` if absent or evicted.
     pub async fn get(&self, key: &str) -> Option<CachedEntry> {
-        self.inner.get(key).await
+        self.inner.get(key).await.map(|v| v.entry)
     }
 
+    /// Insert or replace an entry.
+    ///
+    /// `ttl` is an optional upper bound on memory residency. Freshness for
+    /// serving is still decided by `entry.meta.expires_at` at read time.
     pub async fn insert(&self, key: &str, entry: CachedEntry, ttl: Option<Duration>) {
-        let _ = ttl;
-        self.inner.insert(key.to_string(), entry).await;
+        self.inner
+            .insert(key.to_string(), MemValue { entry, ttl })
+            .await;
     }
 
     pub async fn invalidate(&self, key: &str) {
@@ -49,6 +97,7 @@ impl MemCache {
         self.inner.entry_count()
     }
 
+    /// Flush pending moka maintenance so tests can observe evictions.
     pub async fn sync(&self) -> Result<()> {
         self.inner.run_pending_tasks().await;
         Ok(())
@@ -106,5 +155,25 @@ mod tests {
         mem.invalidate_all().await;
         mem.sync().await.unwrap();
         assert_eq!(mem.entry_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn ttl_expires_entry_from_memory() {
+        let mem = MemCache::new(1024);
+        mem.insert("k", entry(b"abc"), Some(Duration::from_millis(50)))
+            .await;
+        assert!(mem.get("k").await.is_some());
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        mem.sync().await.unwrap();
+        assert!(mem.get("k").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn none_ttl_keeps_entry_alive() {
+        let mem = MemCache::new(1024);
+        mem.insert("k", entry(b"abc"), None).await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        mem.sync().await.unwrap();
+        assert!(mem.get("k").await.is_some());
     }
 }

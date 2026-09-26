@@ -32,9 +32,9 @@ async fn seed(engine: &rustcache::engine::CacheEngine, url: &str, body: &[u8]) {
         expires_at: Some(now_ms() + 60_000),
         cacheable: true,
     };
-    engine.disk.store(meta.clone(), body).await.unwrap();
+    engine.disk().store(meta.clone(), body).await.unwrap();
     engine
-        .mem
+        .mem()
         .insert(
             key.as_str(),
             rustcache_core::cache::mem::CachedEntry {

@@ -12,7 +12,7 @@ use rustcache::config::watch::LiveConfig;
 use rustcache::config::Config;
 use rustcache_core::certs::ca::generate_ca;
 use rustcache_core::excl::ExclusionSet;
-use rustcache_core::stats::ReqRecord;
+use rustcache_core::stats::{Outcome, ReqRecord};
 use tower::util::ServiceExt;
 
 async fn make_state() -> (ApiState, std::path::PathBuf) {
@@ -33,14 +33,14 @@ async fn make_state() -> (ApiState, std::path::PathBuf) {
     (state, dir)
 }
 
-fn rec(ts: u64, method: &str, url: &str, host: &str, status: u16, outcome: &str) -> ReqRecord {
+fn rec(ts: u64, method: &str, url: &str, host: &str, status: u16, outcome: Outcome) -> ReqRecord {
     ReqRecord {
         ts,
         method: method.into(),
         url: url.into(),
         host: host.into(),
         status,
-        outcome: outcome.into(),
+        outcome,
         duration_ms: 1,
         resp_bytes: 2,
     }
@@ -53,7 +53,7 @@ async fn seed(state: &ApiState) {
         "http://example.com/a",
         "example.com",
         200,
-        "HIT",
+        Outcome::Hit,
     ));
     state.engine.record(rec(
         2000,
@@ -61,7 +61,7 @@ async fn seed(state: &ApiState) {
         "http://other.test/b",
         "other.test",
         404,
-        "MISS",
+        Outcome::Miss,
     ));
     state.engine.record(rec(
         3000,
@@ -69,9 +69,9 @@ async fn seed(state: &ApiState) {
         "http://example.com/c",
         "example.com",
         500,
-        "ERROR",
+        Outcome::Error,
     ));
-    state.engine.logs.flush().await.expect("flush");
+    state.engine.logs().flush().await.expect("flush");
 }
 
 async fn json_get(state: ApiState, uri: &str) -> (StatusCode, serde_json::Value) {
@@ -314,24 +314,24 @@ async fn log_stats_hit_rate_bytes() {
         url: "http://a/".into(),
         host: "a".into(),
         status: 200,
-        outcome: "HIT".into(),
+        outcome: Outcome::Hit,
         duration_ms: 10,
         resp_bytes: 100,
     };
     state.engine.record(hits.clone());
-    hits.outcome = "HIT_REVALIDATED".into();
+    hits.outcome = Outcome::HitRevalidated;
     hits.resp_bytes = 200;
     hits.ts = 2000;
     state.engine.record(hits.clone());
-    hits.outcome = "MISS".into();
+    hits.outcome = Outcome::Miss;
     hits.resp_bytes = 400;
     hits.ts = 3000;
     state.engine.record(hits.clone());
-    hits.outcome = "REVALIDATED".into();
+    hits.outcome = Outcome::Revalidated;
     hits.resp_bytes = 800;
     hits.ts = 4000;
     state.engine.record(hits);
-    state.engine.logs.flush().await.expect("flush");
+    state.engine.logs().flush().await.expect("flush");
 
     let (_, v) = json_get(state.clone(), "/api/logs/stats").await;
     assert_eq!(v["total"], 4);

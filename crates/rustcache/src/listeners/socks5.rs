@@ -6,7 +6,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::engine::SharedEngine;
-use rustcache_core::stats::ReqRecord;
+use rustcache_core::stats::{Outcome, ReqRecord};
 
 const VER: u8 = 0x05;
 const METHOD_NO_AUTH: u8 = 0x00;
@@ -74,7 +74,7 @@ async fn handle(mut client: TcpStream, engine: SharedEngine) -> anyhow::Result<(
             url: String::new(),
             host: String::new(),
             status: 0,
-            outcome: "REJECT_CMD".into(),
+            outcome: Outcome::RejectCmd,
             duration_ms: started.elapsed().as_millis() as u64,
             resp_bytes: 0,
         });
@@ -147,7 +147,7 @@ async fn handle(mut client: TcpStream, engine: SharedEngine) -> anyhow::Result<(
                 url: target.to_string(),
                 host: host_label,
                 status: 0,
-                outcome: "TUNNEL".into(),
+                outcome: Outcome::Tunnel,
                 duration_ms: started.elapsed().as_millis() as u64,
                 resp_bytes: a + b,
             });
@@ -164,7 +164,7 @@ async fn handle(mut client: TcpStream, engine: SharedEngine) -> anyhow::Result<(
                 url: target.to_string(),
                 host: host_label,
                 status: 0,
-                outcome: "ERROR".into(),
+                outcome: Outcome::Error,
                 duration_ms: started.elapsed().as_millis() as u64,
                 resp_bytes: 0,
             });
