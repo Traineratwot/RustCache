@@ -1,0 +1,14 @@
+Package: rustcache
+Version: @VERSION@
+Section: net
+Priority: optional
+Architecture: @ARCH@
+Maintainer: Traineratwot <Traineratwot@users.noreply.github.com>
+Homepage: https://github.com/Traineratwot/RustCache
+Depends: libc6, libgcc-s1
+Description: Caching HTTP/HTTPS proxy with MITM and disk cache
+ RustCache is a caching HTTP/HTTPS proxy with TLS MITM (local root CA),
+ on-disk + in-memory cache, SOCKS5 tunnel and a local REST API/web UI.
+ .
+ System install runs as user `rustcache` with data in /var/lib/rustcache
+ and config in /etc/rustcache/config.toml.

@@ -1,0 +1,31 @@
+[Unit]
+Description=RustCache caching HTTP/HTTPS proxy
+Documentation=https://github.com/Traineratwot/RustCache
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rustcache
+Group=rustcache
+WorkingDirectory=/var/lib/rustcache
+ExecStart=/usr/bin/rustcache run --config /etc/rustcache/config.toml
+# Self-restart (POST /api/config/restart) re-execs and the parent exits 0.
+# on-failure (not always) so a clean self-restart does not double-start.
+# If the unit stays down after a UI restart, run: systemctl start rustcache
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=20s
+
+# hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/rustcache
+
+[Install]
+WantedBy=multi-user.target

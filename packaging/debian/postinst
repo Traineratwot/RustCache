@@ -1,0 +1,37 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        # Dedicated system user for the service
+        if ! getent passwd rustcache >/dev/null; then
+            adduser --system --group \
+                --home /var/lib/rustcache --no-create-home \
+                --quiet rustcache
+        fi
+
+        install -d -o rustcache -g rustcache -m 0750 /var/lib/rustcache
+
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload || true
+            deb-systemd-helper enable rustcache.service >/dev/null || true
+            if [ "$2" ]; then
+                # upgrade: try-restart keeps a running service alive across the swap
+                deb-systemd-invoke try-restart rustcache.service || true
+            else
+                # fresh install
+                deb-systemd-invoke start rustcache.service || true
+            fi
+        fi
+        ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+
+    *)
+        echo "rustcache postinst: unknown argument '$1'" >&2
+        exit 1
+        ;;
+esac
+
+exit 0

@@ -1,0 +1,41 @@
+# RustCache system configuration (Debian/Ubuntu package)
+# Installed as /etc/rustcache/config.toml — dpkg conffile; local edits are preserved on upgrade.
+
+# Root data directory. Relative paths below resolve under this directory.
+# Absolute paths (or ~/...) are used as-is and ignore data_dir.
+data_dir = "/var/lib/rustcache"
+
+[http]
+port = 3128
+
+[https]
+port = 3129
+
+[socks5]
+port = 1080
+
+[api]
+bind = "127.0.0.1:8080"
+
+[cache]
+dir = "cache"            # relative → $data_dir/cache
+max_bytes = 2147483648
+max_object_bytes = 52428800
+
+[exclude]
+domains = ["*.local", "bank.example", "exact.host"]
+cidrs = ["192.168.0.0/16", "10.0.0.0/8"]
+
+[ca]
+dir = "ca"               # relative → $data_dir/ca
+
+[logs]
+db_path = "logs.db"      # relative → $data_dir/logs.db
+max_rows = 10000
+max_age_days = 7
+cleanup_interval_secs = 300
+
+[pac]
+enabled = true
+bind = "0.0.0.0:8081"
+mode = "http+socks"   # "http" | "socks" | "http+socks"

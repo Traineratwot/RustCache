@@ -1,0 +1,195 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      should_release: ${{ steps.meta.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from Cargo.toml
+        id: meta
+        run: |
+          VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])")
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "Tag ${TAG} already exists — skipping release."
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "Will release ${TAG}."
+          fi
+
+  gate:
+    needs: version
+    if: needs.version.outputs.should_release == 'true'
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  build:
+    needs: [version, gate]
+    if: needs.version.outputs.should_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            deb_arch: amd64
+          - os: ubuntu-22.04-arm
+            deb_arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web UI
+        run: |
+          npm --prefix web install
+          npm --prefix web run build
+
+      - name: Build binary (embed-ui)
+        run: cargo build --release --features embed-ui
+
+      - name: Sanity check binary
+        run: ./target/release/rustcache --help
+
+      - name: Build .deb
+        run: ./packaging/scripts/build-deb.sh "${{ needs.version.outputs.version }}" "${{ matrix.deb_arch }}"
+
+      - name: Build tar.gz
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          DEB_ARCH: ${{ matrix.deb_arch }}
+        run: |
+          STAGE="dist/rustcache-${VERSION}-linux-${DEB_ARCH}"
+          mkdir -p "$STAGE"
+          cp target/release/rustcache config.example.toml "$STAGE/"
+          tar -C dist -czf "dist/rustcache_${VERSION}_linux_${DEB_ARCH}.tar.gz" "rustcache-${VERSION}-linux-${DEB_ARCH}"
+          rm -rf "$STAGE"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.deb_arch }}
+          path: |
+            dist/*.deb
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: [version, build]
+    if: needs.version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum *.deb *.tar.gz > SHA256SUMS
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          gh release create "${TAG}" \
+            --target "${GITHUB_SHA}" \
+            --title "${TAG}" \
+            --generate-notes \
+            dist/*.deb dist/*.tar.gz dist/SHA256SUMS
+
+  apt-repo:
+    needs: [version, build]
+    if: needs.version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: gh-pages
+      cancel-in-progress: false
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Materialize previous gh-pages content
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git clone --depth 1 --branch gh-pages \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" site \
+            || (mkdir -p site && git -C site init && git -C site checkout --orphan gh-pages)
+          mkdir -p site/pool
+
+      - name: Add new packages
+        run: cp dist/*.deb site/pool/
+
+      - name: Regenerate apt index
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dpkg-dev
+          cd site
+          dpkg-scanpackages --multiversion pool /dev/null > Packages
+          gzip -9c Packages > Packages.gz
+          printf '%s\n' \
+            'Origin: RustCache' \
+            'Label: RustCache' \
+            'Architectures: amd64 arm64' \
+            'Description: RustCache apt repository' \
+            > Release
+
+      - name: Push gh-pages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          cd site
+          git add -A
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "apt: add rustcache ${VERSION}" --allow-empty
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:gh-pages

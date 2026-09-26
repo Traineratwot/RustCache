@@ -10,3 +10,4 @@ web/dist
 config.toml
 /rustcache.log
 /rustcache.pid
+/dist/

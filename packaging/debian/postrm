@@ -1,0 +1,31 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove)
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload || true
+        fi
+        ;;
+
+    purge)
+        rm -rf /var/lib/rustcache
+        # keep the rustcache system user; only drop it if nothing else uses it
+        if getent passwd rustcache >/dev/null; then
+            deluser --system rustcache >/dev/null 2>&1 || true
+        fi
+        if getent group rustcache >/dev/null; then
+            delgroup --system rustcache >/dev/null 2>&1 || true
+        fi
+        ;;
+
+    upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        ;;
+
+    *)
+        echo "rustcache postrm: unknown argument '$1'" >&2
+        exit 1
+        ;;
+esac
+
+exit 0

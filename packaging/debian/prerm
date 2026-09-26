@@ -1,0 +1,24 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove)
+        if [ -d /run/systemd/system ]; then
+            deb-systemd-invoke stop rustcache.service || true
+        fi
+        ;;
+
+    upgrade|deconfigure)
+        # keep the service running so the new version can take over
+        ;;
+
+    failed-upgrade)
+        ;;
+
+    *)
+        echo "rustcache prerm: unknown argument '$1'" >&2
+        exit 1
+        ;;
+esac
+
+exit 0
