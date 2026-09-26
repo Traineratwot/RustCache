@@ -8,3 +8,5 @@ web/dist
 /cache/
 /tmp
 config.toml
+/rustcache.log
+/rustcache.pid
