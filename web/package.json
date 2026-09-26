@@ -4,7 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/copy-themes.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/copy-themes.mjs",
     "build": "tsc -b && vite build",
     "lint": "biome check src",
     "fmt": "biome format --write src",
@@ -12,11 +14,13 @@
   },
   "dependencies": {
     "chart.js": "^4.5.1",
+    "i18next": "^26.4.2",
     "primeflex": "^4.0.0",
     "primeicons": "^8.0.2",
     "primereact": "^10.9.9",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "react-i18next": "^17.0.15",
     "react-router-dom": "^7.18.4"
   },
   "devDependencies": {

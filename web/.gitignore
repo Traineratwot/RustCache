@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Generated PrimeReact theme copies (see scripts/copy-themes.mjs)
+public/themes/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

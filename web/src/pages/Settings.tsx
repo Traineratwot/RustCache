@@ -2,10 +2,15 @@ import { Button } from "primereact/button";
 import { Card } from "primereact/card";
 import { InputNumber } from "primereact/inputnumber";
 import { Message } from "primereact/message";
+import { RadioButton } from "primereact/radiobutton";
 import { Toast } from "primereact/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { getConfig, reloadConfig, updateLogSettings } from "../api/client";
 import type { Config, LogSettings } from "../api/types";
+import { fmtMb } from "../lib/format";
+import { usePrefs } from "../prefs/PrefsContext";
+import type { LangMode, ThemeMode } from "../prefs/storage";
 
 function Row({ label, value }: { label: string; value: string | number }) {
   return (
@@ -16,7 +21,21 @@ function Row({ label, value }: { label: string; value: string | number }) {
   );
 }
 
+const themeOptions: { key: ThemeMode; labelKey: string }[] = [
+  { key: "auto", labelKey: "ui.theme.auto" },
+  { key: "light", labelKey: "ui.theme.light" },
+  { key: "dark", labelKey: "ui.theme.dark" },
+];
+
+const langOptions: { key: LangMode; labelKey: string }[] = [
+  { key: "auto", labelKey: "ui.lang.auto" },
+  { key: "ru", labelKey: "ui.lang.ru" },
+  { key: "en", labelKey: "ui.lang.en" },
+];
+
 export default function Settings() {
+  const { t } = useTranslation();
+  const { langMode, setLangMode, themeMode, setThemeMode } = usePrefs();
   const [cfg, setCfg] = useState<Config | null>(null);
   const [busy, setBusy] = useState(false);
   const [saveBusy, setSaveBusy] = useState(false);
@@ -42,11 +61,11 @@ export default function Settings() {
     } catch {
       toast.current?.show({
         severity: "error",
-        summary: "Ошибка",
-        detail: "Не удалось загрузить конфигурацию",
+        summary: t("common.error"),
+        detail: t("settings.loadError"),
       });
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     load();
@@ -57,19 +76,19 @@ export default function Settings() {
     try {
       const r = await reloadConfig();
       if (r.ok) {
-        setReloadMsg({ ok: true, text: "Конфигурация перезагружена" });
+        setReloadMsg({ ok: true, text: t("settings.reloaded") });
         toast.current?.show({
           severity: "success",
-          summary: "Готово",
-          detail: "Конфигурация перезагружена",
+          summary: t("common.done"),
+          detail: t("settings.reloaded"),
         });
         if (r.config) setCfg(r.config);
         else await load();
       } else {
-        setReloadMsg({ ok: false, text: r.error ?? "Ошибка перезагрузки" });
+        setReloadMsg({ ok: false, text: r.error ?? t("settings.reloadError") });
       }
     } catch {
-      setReloadMsg({ ok: false, text: "Не удалось связаться с API" });
+      setReloadMsg({ ok: false, text: t("settings.reloadApiError") });
     } finally {
       setBusy(false);
     }
@@ -83,21 +102,21 @@ export default function Settings() {
         setLogForm(r.settings);
         toast.current?.show({
           severity: "success",
-          summary: "Готово",
-          detail: "Настройки журнала сохранены",
+          summary: t("common.done"),
+          detail: t("settings.logsSaved"),
         });
       } else {
         toast.current?.show({
           severity: "error",
-          summary: "Ошибка",
-          detail: "Не удалось сохранить настройки",
+          summary: t("common.error"),
+          detail: t("settings.logsSaveError"),
         });
       }
     } catch {
       toast.current?.show({
         severity: "error",
-        summary: "Ошибка",
-        detail: "Не удалось сохранить настройки журнала",
+        summary: t("common.error"),
+        detail: t("settings.logsSaveError2"),
       });
     } finally {
       setSaveBusy(false);
@@ -107,63 +126,89 @@ export default function Settings() {
   return (
     <>
       <Toast ref={toast} />
-      <h1 className="page-title">Настройки</h1>
-      <Message
-        severity="info"
-        text="Параметры ниже — эффективная конфигурация. Настройки журнала редактируются; остальное только чтение. Hot-reload применяет изменения исключений; порты и лимиты кеша требуют перезапуска."
-        className="mb-3 w-full"
-      />
+      <h1 className="page-title">{t("settings.title")}</h1>
+      <Message severity="info" text={t("settings.intro")} className="mb-3 w-full" />
 
       {!cfg ? (
-        <p>Загрузка...</p>
+        <p>{t("common.loading")}</p>
       ) : (
         <div className="grid">
           <div className="col-12 md:col-6">
-            <Card title="Слушатели">
-              <Row label="HTTP proxy" value={cfg.http.port} />
-              <Row label="HTTPS MITM" value={cfg.https.port} />
-              <Row label="SOCKS5" value={cfg.socks5.port} />
-              <Row label="API bind" value={cfg.api.bind} />
+            <Card title={t("ui.section")}>
+              <div className="flex flex-column gap-3">
+                <div>
+                  <div className="text-color-secondary mb-2">{t("ui.lang.label")}</div>
+                  <div className="flex flex-wrap gap-3">
+                    {langOptions.map((o) => (
+                      <div key={o.key} className="flex align-items-center gap-2">
+                        <RadioButton
+                          inputId={`lang-${o.key}`}
+                          name="lang"
+                          value={o.key}
+                          onChange={() => setLangMode(o.key)}
+                          checked={langMode === o.key}
+                        />
+                        <label htmlFor={`lang-${o.key}`}>{t(o.labelKey)}</label>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-color-secondary mb-2">{t("ui.theme.label")}</div>
+                  <div className="flex flex-wrap gap-3">
+                    {themeOptions.map((o) => (
+                      <div key={o.key} className="flex align-items-center gap-2">
+                        <RadioButton
+                          inputId={`theme-${o.key}`}
+                          name="theme"
+                          value={o.key}
+                          onChange={() => setThemeMode(o.key)}
+                          checked={themeMode === o.key}
+                        />
+                        <label htmlFor={`theme-${o.key}`}>{t(o.labelKey)}</label>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </Card>
           </div>
           <div className="col-12 md:col-6">
-            <Card title="Пути">
-              <Row label="Данные (data_dir)" value={cfg.data_dir} />
-              <Row label="Кеш" value={cfg.cache.dir} />
-              <Row label="CA" value={cfg.ca.dir} />
-              <Row label="Журнал" value={cfg.logs.db_path} />
+            <Card title={t("settings.listeners")}>
+              <Row label={t("settings.httpProxy")} value={cfg.http.port} />
+              <Row label={t("settings.httpsMitm")} value={cfg.https.port} />
+              <Row label={t("settings.socks5")} value={cfg.socks5.port} />
+              <Row label={t("settings.apiBind")} value={cfg.api.bind} />
+            </Card>
+          </div>
+          <div className="col-12 md:col-6">
+            <Card title={t("settings.paths")}>
+              <Row label={t("settings.dataDir")} value={cfg.data_dir} />
+              <Row label={t("settings.cacheDir")} value={cfg.cache.dir} />
+              <Row label={t("settings.caDir")} value={cfg.ca.dir} />
+              <Row label={t("settings.logDb")} value={cfg.logs.db_path} />
               <p className="text-color-secondary" style={{ marginBottom: 0, fontSize: "0.9rem" }}>
-                Относительные пути разрешаются от data_dir. Абсолютные используются как есть. CLI:{" "}
-                <code>--data-dir</code>. Смена каталога — через config.toml или флаг, нужен
-                перезапуск.
+                {t("settings.pathsHint")}
               </p>
             </Card>
           </div>
           <div className="col-12 md:col-6">
-            <Card title="Кеш">
-              <Row label="Директория" value={cfg.cache.dir} />
-              <Row
-                label="Макс. размер"
-                value={`${(cfg.cache.max_bytes / 1024 / 1024).toFixed(0)} МБ`}
-              />
-              <Row
-                label="Макс. объект"
-                value={`${(cfg.cache.max_object_bytes / 1024 / 1024).toFixed(0)} МБ`}
-              />
+            <Card title={t("settings.cacheSection")}>
+              <Row label={t("settings.dir")} value={cfg.cache.dir} />
+              <Row label={t("settings.maxSize")} value={fmtMb(cfg.cache.max_bytes)} />
+              <Row label={t("settings.maxObject")} value={fmtMb(cfg.cache.max_object_bytes)} />
             </Card>
           </div>
           <div className="col-12 md:col-6">
-            <Card title="CA">
-              <Row label="Директория" value={cfg.ca.dir} />
+            <Card title={t("settings.caSection")}>
+              <Row label={t("settings.dir")} value={cfg.ca.dir} />
             </Card>
           </div>
           <div className="col-12 md:col-6">
-            <Card title="Hot-reload">
-              <p style={{ marginTop: 0 }}>
-                Перечитать config.toml с диска и применить изменения исключений без перезапуска.
-              </p>
+            <Card title={t("settings.hotReload")}>
+              <p style={{ marginTop: 0 }}>{t("settings.hotReloadDesc")}</p>
               <Button
-                label="Reload config"
+                label={t("settings.reload")}
                 icon="pi pi-refresh"
                 loading={busy}
                 onClick={handleReload}
@@ -178,11 +223,11 @@ export default function Settings() {
             </Card>
           </div>
           <div className="col-12 md:col-6">
-            <Card title="Логи запросов">
+            <Card title={t("settings.logs")}>
               <div className="flex flex-column gap-3">
                 <div className="flex flex-column gap-1">
                   <label htmlFor="log-max-rows" className="text-color-secondary">
-                    Максимум записей
+                    {t("settings.maxRows")}
                   </label>
                   <InputNumber
                     id="log-max-rows"
@@ -197,7 +242,7 @@ export default function Settings() {
                 </div>
                 <div className="flex flex-column gap-1">
                   <label htmlFor="log-max-age" className="text-color-secondary">
-                    Хранить дней
+                    {t("settings.maxAge")}
                   </label>
                   <InputNumber
                     id="log-max-age"
@@ -212,7 +257,7 @@ export default function Settings() {
                 </div>
                 <div className="flex flex-column gap-1">
                   <label htmlFor="log-interval" className="text-color-secondary">
-                    Интервал очистки, сек
+                    {t("settings.cleanupInterval")}
                   </label>
                   <InputNumber
                     id="log-interval"
@@ -229,7 +274,7 @@ export default function Settings() {
                   />
                 </div>
                 <Button
-                  label="Сохранить"
+                  label={t("common.save")}
                   icon="pi pi-save"
                   loading={saveBusy}
                   onClick={handleSaveLogs}

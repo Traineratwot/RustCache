@@ -5,7 +5,8 @@ import { Message } from "primereact/message";
 import { TabPanel, TabView } from "primereact/tabview";
 import { Tag } from "primereact/tag";
 import { Toast } from "primereact/toast";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { getConfig, getNetInfo, getPac } from "../api/client";
 import type { Config, PacInfo } from "../api/types";
 
@@ -28,7 +29,7 @@ function Code({ children }: { children: string }) {
   );
 }
 
-function Step({ n, children }: { n: number; children: React.ReactNode }) {
+function Step({ n, children }: { n: number; children: ReactNode }) {
   return (
     <div className="flex gap-2 mb-2">
       <Tag value={String(n)} severity="info" style={{ minWidth: "2rem", height: "2rem" }} />
@@ -74,8 +75,8 @@ async function detectExternalIp(): Promise<string | null> {
     try {
       const r = await fetch(url, { signal: AbortSignal.timeout(4000) });
       if (r.ok) {
-        const t = (await r.text()).trim();
-        if (/^\d{1,3}(\.\d{1,3}){3}$/.test(t) || t.includes(":")) return t;
+        const text = (await r.text()).trim();
+        if (/^\d{1,3}(\.\d{1,3}){3}$/.test(text) || text.includes(":")) return text;
       }
     } catch {
       // try next
@@ -85,6 +86,7 @@ async function detectExternalIp(): Promise<string | null> {
 }
 
 export default function Connect() {
+  const { t } = useTranslation();
   const [cfg, setCfg] = useState<Config | null>(null);
   const [localIps, setLocalIps] = useState<string[]>(["127.0.0.1"]);
   const [externalIp, setExternalIp] = useState<string | null>(null);
@@ -122,13 +124,13 @@ export default function Connect() {
       .then(() =>
         toast.current?.show({
           severity: "success",
-          summary: "Скопировано",
+          summary: t("common.copied"),
           detail: text,
           life: 1500,
         }),
       )
       .catch(() => {
-        /* clipboard может быть недоступен */
+        /* clipboard may be unavailable */
       });
   };
 
@@ -140,41 +142,37 @@ export default function Connect() {
   const pacUrl = `http://${ip}:${pacPort}/proxy.pac`;
   const pacModeLabel =
     pac?.mode === "http"
-      ? "только HTTP-прокси"
+      ? t("connect.pacModeHttp")
       : pac?.mode === "socks"
-        ? "только SOCKS5"
-        : "HTTP-прокси + SOCKS5";
+        ? t("connect.pacModeSocks")
+        : t("connect.pacModeBoth");
 
   return (
     <>
       <Toast ref={toast} />
-      <h1 className="page-title">Подключение</h1>
-      <Message
-        severity="info"
-        text="Прокси слушает на 0.0.0.0 — подключайтесь с других устройств по LAN-адресу. API и эта панель доступны только на 127.0.0.1. Кликните по карточке IP — этот адрес будет использован в инструкциях ниже."
-        className="mb-3 w-full"
-      />
+      <h1 className="page-title">{t("connect.title")}</h1>
+      <Message severity="info" text={t("connect.intro")} className="mb-3 w-full" />
 
-      <h2 style={{ fontSize: "1.1rem", margin: "0 0 0.75rem" }}>Выберите адрес подключения</h2>
+      <h2 style={{ fontSize: "1.1rem", margin: "0 0 0.75rem" }}>{t("connect.chooseAddr")}</h2>
       <div className="stat-grid">
         {localIps.map((lip) => (
           <IpCard
             key={lip}
-            label={lip.startsWith("172.") ? "Docker / bridge" : "LAN-адрес"}
+            label={lip.startsWith("172.") ? t("connect.dockerIp") : t("connect.lanIp")}
             ip={lip}
             selected={selectedIp === lip}
             onSelect={() => setSelectedIp(lip)}
           />
         ))}
         <IpCard
-          label="Loopback (этот компьютер)"
+          label={t("connect.loopback")}
           ip="127.0.0.1"
           selected={selectedIp === "127.0.0.1"}
           onSelect={() => setSelectedIp("127.0.0.1")}
         />
         {externalIp && (
           <IpCard
-            label="Внешний (ifconfig.me)"
+            label={t("connect.external")}
             ip={externalIp}
             selected={selectedIp === externalIp}
             onSelect={() => setSelectedIp(externalIp)}
@@ -183,165 +181,168 @@ export default function Connect() {
       </div>
 
       <div className="flex gap-2 mt-2">
-        <Button label="Обновить IP" icon="pi pi-refresh" text onClick={refresh} />
-        <Button label="Скопировать выбранный" icon="pi pi-copy" text onClick={() => copy(ip)} />
+        <Button label={t("connect.refreshIp")} icon="pi pi-refresh" text onClick={refresh} />
+        <Button label={t("connect.copySelected")} icon="pi pi-copy" text onClick={() => copy(ip)} />
       </div>
 
-      <Card title={`Адрес для подключения: ${ip}`} className="mt-3">
+      <Card title={t("connect.addrTitle", { ip })} className="mt-3">
         <p style={{ marginTop: 0 }}>
-          HTTP-прокси: <Tag value={`${ip}:${httpPort}`} severity="info" /> · HTTPS (MITM):{" "}
-          <Tag value={`${ip}:${httpsPort}`} severity="info" /> · SOCKS5:{" "}
-          <Tag value={`${ip}:${socksPort}`} severity="secondary" />
+          {t("connect.httpProxy")}: <Tag value={`${ip}:${httpPort}`} severity="info" /> ·{" "}
+          {t("connect.httpsMitm")}: <Tag value={`${ip}:${httpsPort}`} severity="info" /> ·{" "}
+          {t("connect.socks5")}: <Tag value={`${ip}:${socksPort}`} severity="secondary" />
         </p>
       </Card>
 
       {pac?.enabled !== false && (
-        <Card title="PAC / WPAD — автоматическая настройка прокси" className="mt-3">
-          <p style={{ marginTop: 0 }}>
-            URL PAC-скрипта для выбранного адреса (режим:{" "}
-            <Tag value={pacModeLabel} severity="info" />
-            ):
-          </p>
+        <Card title={t("connect.pacTitle")} className="mt-3">
+          <p style={{ marginTop: 0 }}>{t("connect.pacUrlLabel", { mode: pacModeLabel })}</p>
           <Code>{pacUrl}</Code>
           <div className="flex gap-2 mb-3">
-            <Button label="Скопировать URL" icon="pi pi-copy" text onClick={() => copy(pacUrl)} />
+            <Button
+              label={t("connect.copyPacUrl")}
+              icon="pi pi-copy"
+              text
+              onClick={() => copy(pacUrl)}
+            />
           </div>
           <p>
-            Также доступен как <code>wpad.dat</code>:{" "}
-            <code>
-              http://{ip}:{pacPort}/wpad.dat
-            </code>
-            .
+            <Trans
+              i18nKey="connect.wpadAlso"
+              values={{ url: `http://${ip}:${pacPort}/wpad.dat` }}
+              components={{ 1: <code />, 2: <code /> }}
+            />
           </p>
           <ul style={{ lineHeight: "1.7", paddingLeft: "1.25rem" }}>
             <li>
-              <strong>Windows:</strong> Параметры → Сеть и интернет → Прокси-сервер →
-              «Автоматическая настройка прокси» → «Использовать адрес скрипта» → вставьте URL выше.
+              <strong>Windows:</strong> {t("connect.pacWin")}
             </li>
             <li>
-              <strong>Linux (Firefox):</strong> Настройки → Сеть → «Настройка прокси-сервера» → «URL
-              автоматической настройки прокси» → вставьте URL.
+              <strong>Linux (Firefox):</strong> {t("connect.pacLinux")}
             </li>
             <li>
-              <strong>Android:</strong> Wi-Fi → сеть → «Изменить» → Дополнительно → Прокси: «Авто» /
-              «Auto-config» (или «Прокси-скрипт») → URL PAC.
+              <strong>Android:</strong> {t("connect.pacAndroid")}
             </li>
           </ul>
-          <Message
-            severity="info"
-            className="w-full"
-            text={
-              "Исключённые хосты и CIDR из списка исключений получают DIRECT (напрямую, без прокси). " +
-              "Переменные окружения http_proxy/https_proxy — это не PAC: PAC действует на уровне браузера/ОС."
-            }
-          />
+          <Message severity="info" className="w-full" text={t("connect.pacExclusionsNote")} />
         </Card>
       )}
 
-      <Card title="Инструкции по платформам" className="mt-3">
+      <Card title={t("connect.platforms")} className="mt-3">
         <TabView>
-          <TabPanel header="Windows" leftIcon="pi pi-microsoft">
+          <TabPanel header={t("connect.windows")} leftIcon="pi pi-microsoft">
             <Step n={1}>
-              <strong>Установите сертификат CA</strong> (нужен для HTTPS-перехвата). Скачайте{" "}
-              <a href="/api/ca.crt" download>
-                ca.crt
-              </a>
-              , затем двойной клик → «Установить сертификат» → «Локальный компьютер» → «Доверенные
-              корневые центры сертификации».
+              <Trans
+                i18nKey="connect.win1"
+                components={{
+                  1: (
+                    <a href="/api/ca.crt" download>
+                      ca.crt
+                    </a>
+                  ),
+                }}
+              />
             </Step>
             <Step n={2}>
-              <strong>Системный прокси:</strong> Параметры → Сеть и интернет → Прокси-сервер →
-              «Использовать прокси-сервер» → адрес <code>{ip}</code>, порт <code>{httpPort}</code>.
+              <Trans
+                i18nKey="connect.win2"
+                values={{ ip, port: httpPort }}
+                components={{ 1: <code />, 2: <code /> }}
+              />
             </Step>
             <Step n={3}>
-              <strong>Или через командную строку (WinHTTP):</strong>
+              {t("connect.win3")}
               <Code>{`netsh winhttp set proxy ${ip}:${httpPort}`}</Code>
-              Отмена: <Code>{`netsh winhttp reset proxy`}</Code>
+              {t("connect.win3cancel")} <Code>{`netsh winhttp reset proxy`}</Code>
             </Step>
             <Step n={4}>
-              <strong>PowerShell (переменные окружения):</strong>
+              {t("connect.win4")}
               <Code>{`$env:HTTP_PROXY  = "http://${ip}:${httpPort}"\n$env:HTTPS_PROXY = "http://${ip}:${httpsPort}"`}</Code>
             </Step>
             <Step n={5}>
-              <strong>SOCKS5</strong> (туннель без кеша) — порт <code>{socksPort}</code>. В Firefox:
-              Настройки → Сеть → Ручная настройка прокси → SOCKS Host <code>{ip}</code>, порт{" "}
-              <code>{socksPort}</code>, версия SOCKS v5.
+              <Trans
+                i18nKey="connect.win5"
+                values={{ ip, port: socksPort }}
+                components={{ 1: <code />, 2: <code />, 3: <code /> }}
+              />
             </Step>
           </TabPanel>
 
-          <TabPanel header="Linux" leftIcon="pi pi-desktop">
+          <TabPanel header={t("connect.linux")} leftIcon="pi pi-desktop">
             <Step n={1}>
-              <strong>Установите CA в системный трест:</strong>
+              {t("connect.lin1")}
               <Code>{`sudo cp ca.crt /usr/local/share/ca-certificates/rustcache-ca.crt\nsudo update-ca-certificates`}</Code>
-              Для curl без установки: <Code>{`curl --cacert ca.crt https://example.com/`}</Code>
+              {t("connect.lin1curl")} <Code>{`curl --cacert ca.crt https://example.com/`}</Code>
             </Step>
             <Step n={2}>
-              <strong>Переменные окружения (bash/zsh):</strong>
+              {t("connect.lin2")}
               <Code>{`export http_proxy=http://${ip}:${httpPort}\nexport https_proxy=http://${ip}:${httpsPort}\nexport no_proxy=localhost,127.0.0.1`}</Code>
-              Добавьте эти строки в <code>~/.bashrc</code> или <code>~/.zshrc</code>.
+              <Trans i18nKey="connect.lin2hint" components={{ 1: <code />, 2: <code /> }} />
             </Step>
             <Step n={3}>
-              <strong>GNOME:</strong> Настройки → Сеть → Прокси-сервер → «Вручную» → HTTP{" "}
-              <code>
-                {ip}:{httpPort}
-              </code>
-              , HTTPS{" "}
-              <code>
-                {ip}:{httpsPort}
-              </code>
-              .
+              <Trans
+                i18nKey="connect.lin3"
+                values={{ http: `${ip}:${httpPort}`, https: `${ip}:${httpsPort}` }}
+                components={{ 1: <code />, 2: <code /> }}
+              />
             </Step>
             <Step n={4}>
-              <strong>apt:</strong>
+              {t("connect.lin4")}
               <Code>{`sudo bash -c 'echo "Acquire::http::Proxy \\"http://${ip}:${httpPort}\\";" > /etc/apt/apt.conf.d/99proxy'`}</Code>
             </Step>
             <Step n={5}>
-              <strong>SOCKS5</strong> (туннель без кеша) — порт <code>{socksPort}</code>:
+              <Trans
+                i18nKey="connect.lin5"
+                values={{ port: socksPort }}
+                components={{ 1: <code /> }}
+              />
               <Code>{`curl --socks5 ${ip}:${socksPort} https://example.com/`}</Code>
             </Step>
           </TabPanel>
 
-          <TabPanel header="Android" leftIcon="pi pi-android">
+          <TabPanel header={t("connect.android")} leftIcon="pi pi-android">
             <Step n={1}>
-              <strong>Установите CA-сертификат:</strong> Скачайте{" "}
-              <a href="/api/ca.crt" download>
-                ca.crt
-              </a>
-              . Затем Настройки → Безопасность → Шифрование и учётные данные → «Установить
-              сертификат» → «Сертификат CA». (На Android 10+ может потребоваться установка через
-              «Пользовательские сертификаты» в настройках безопасности.)
+              <Trans
+                i18nKey="connect.and1"
+                components={{
+                  1: (
+                    <a href="/api/ca.crt" download>
+                      ca.crt
+                    </a>
+                  ),
+                }}
+              />
             </Step>
             <Step n={2}>
-              <strong>Прокси для Wi-Fi:</strong> Долгое нажатие на подключённую сеть → «Изменить
-              сеть» → «Дополнительно» → Прокси: «Вручную» → Имя хоста: <code>{ip}</code>, порт:{" "}
-              <code>{httpPort}</code>.
+              <Trans
+                i18nKey="connect.and2"
+                values={{ ip, port: httpPort }}
+                components={{ 1: <code />, 2: <code /> }}
+              />
             </Step>
-            <Step n={3}>
-              <strong>Важно:</strong> Android применяет HTTP-прокси только к браузеру и части
-              приложений. Для перехвата HTTPS нужен установленный CA. Приложения, использующие
-              certificate pinning, не будут работать через MITM.
-            </Step>
+            <Step n={3}>{t("connect.and3")}</Step>
             <Step n={4}>
-              <strong>SOCKS5</strong> (если нужен туннель) — в приложениях с поддержкой SOCKS5
-              укажите{" "}
-              <code>
-                {ip}:{socksPort}
-              </code>
-              .
+              <Trans
+                i18nKey="connect.and4"
+                values={{ ip: `${ip}:${socksPort}` }}
+                components={{ 1: <code /> }}
+              />
             </Step>
             <Divider />
             <Message
               severity="warn"
-              text={`Если устройство и сервер в разных подсетях, убедитесь, что порты ${httpPort}/${httpsPort}/${socksPort} открыты в брандмауэре, и используйте адрес ${ip}.`}
+              text={t("connect.andWarn", {
+                ports: `${httpPort}/${httpsPort}/${socksPort}`,
+                ip,
+              })}
             />
           </TabPanel>
         </TabView>
       </Card>
 
-      <Card title="Проверка подключения" className="mt-3">
-        <p style={{ marginTop: 0 }}>После настройки прокси выполните с другого устройства:</p>
+      <Card title={t("connect.checkTitle")} className="mt-3">
+        <p style={{ marginTop: 0 }}>{t("connect.checkIntro")}</p>
         <Code>{`curl -x http://${ip}:${httpPort} http://example.com/`}</Code>
-        <p>Два запроса подряд: первый — MISS, второй — HIT. Это означает, что кеш работает.</p>
+        <p>{t("connect.checkHint")}</p>
       </Card>
     </>
   );

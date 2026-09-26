@@ -7,14 +7,15 @@ import { InputText } from "primereact/inputtext";
 import { Tag } from "primereact/tag";
 import { Toast } from "primereact/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { addExclusion, deleteExclusion, getExclusions } from "../api/client";
 import type { Matcher } from "../api/types";
 
-const kindLabel: Record<string, string> = {
-  exact: "Точный домен",
-  wildcard: "Поддомены (*)",
-  suffix: "Суффикс",
-  cidr: "CIDR",
+const kindKey: Record<string, string> = {
+  exact: "exclusions.kindExact",
+  wildcard: "exclusions.kindWildcard",
+  suffix: "exclusions.kindSuffix",
+  cidr: "exclusions.kindCidr",
 };
 
 const kindSeverity: Record<string, "info" | "success" | "warning" | "secondary"> = {
@@ -25,6 +26,7 @@ const kindSeverity: Record<string, "info" | "success" | "warning" | "secondary">
 };
 
 export default function Exclusions() {
+  const { t } = useTranslation();
   const [items, setItems] = useState<Matcher[]>([]);
   const [domain, setDomain] = useState("");
   const [cidr, setCidr] = useState("");
@@ -38,11 +40,11 @@ export default function Exclusions() {
     } catch {
       toast.current?.show({
         severity: "error",
-        summary: "Ошибка",
-        detail: "Не удалось загрузить исключения",
+        summary: t("common.error"),
+        detail: t("exclusions.loadError"),
       });
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     load();
@@ -54,8 +56,8 @@ export default function Exclusions() {
     if (!d && !c) {
       toast.current?.show({
         severity: "warn",
-        summary: "Внимание",
-        detail: "Укажите домен или CIDR",
+        summary: t("common.warning"),
+        detail: t("exclusions.needInput"),
       });
       return;
     }
@@ -69,12 +71,16 @@ export default function Exclusions() {
       setCidr("");
       toast.current?.show({
         severity: "success",
-        summary: "Готово",
-        detail: "Исключение добавлено",
+        summary: t("common.done"),
+        detail: t("exclusions.added"),
       });
       await load();
     } catch {
-      toast.current?.show({ severity: "error", summary: "Ошибка", detail: "Не удалось добавить" });
+      toast.current?.show({
+        severity: "error",
+        summary: t("common.error"),
+        detail: t("exclusions.addError"),
+      });
     } finally {
       setLoading(false);
     }
@@ -82,8 +88,8 @@ export default function Exclusions() {
 
   const handleDelete = (m: Matcher) => {
     confirmDialog({
-      message: `Удалить исключение «${m.value}»?`,
-      header: "Подтверждение",
+      message: t("exclusions.deleteOne", { value: m.value }),
+      header: t("common.confirmTitle"),
       icon: "pi pi-exclamation-triangle",
       accept: async () => {
         try {
@@ -94,15 +100,15 @@ export default function Exclusions() {
           }
           toast.current?.show({
             severity: "success",
-            summary: "Готово",
-            detail: "Исключение удалено",
+            summary: t("common.done"),
+            detail: t("exclusions.deleted"),
           });
           await load();
         } catch {
           toast.current?.show({
             severity: "error",
-            summary: "Ошибка",
-            detail: "Не удалось удалить",
+            summary: t("common.error"),
+            detail: t("exclusions.deleteError"),
           });
         }
       },
@@ -111,23 +117,23 @@ export default function Exclusions() {
 
   const handleClearAll = () => {
     confirmDialog({
-      message: "Удалить все исключения?",
-      header: "Подтверждение",
+      message: t("exclusions.deleteAll"),
+      header: t("common.confirmTitle"),
       icon: "pi pi-exclamation-triangle",
       accept: async () => {
         try {
           await deleteExclusion({ all: true });
           toast.current?.show({
             severity: "success",
-            summary: "Готово",
-            detail: "Все исключения удалены",
+            summary: t("common.done"),
+            detail: t("exclusions.deletedAll"),
           });
           await load();
         } catch {
           toast.current?.show({
             severity: "error",
-            summary: "Ошибка",
-            detail: "Не удалось удалить",
+            summary: t("common.error"),
+            detail: t("exclusions.deleteError"),
           });
         }
       },
@@ -138,41 +144,45 @@ export default function Exclusions() {
     <>
       <Toast ref={toast} />
       <ConfirmDialog />
-      <h1 className="page-title">Исключения</h1>
+      <h1 className="page-title">{t("exclusions.title")}</h1>
       <Card>
         <p style={{ marginTop: 0 }}>
-          Запросы к перечисленным доменам и сетям <strong>не кешируются</strong> и{" "}
-          <strong>не проходят через MITM</strong> — соединение идёт напрямую к источнику.
+          <Trans i18nKey="exclusions.description" components={{ 1: <strong />, 2: <strong /> }} />
         </p>
         <div className="flex flex-wrap align-items-end gap-2">
           <div className="flex flex-column">
             <label htmlFor="ex-domain" className="mb-1 font-medium">
-              Домен
+              {t("exclusions.addDomain")}
             </label>
             <InputText
               id="ex-domain"
               value={domain}
               onChange={(e) => setDomain(e.target.value)}
-              placeholder="example.com или *.example.com"
+              placeholder={t("exclusions.domainPlaceholder")}
               style={{ width: "260px" }}
             />
           </div>
           <div className="flex flex-column">
             <label htmlFor="ex-cidr" className="mb-1 font-medium">
-              CIDR
+              {t("exclusions.addCidr")}
             </label>
             <InputText
               id="ex-cidr"
               value={cidr}
               onChange={(e) => setCidr(e.target.value)}
-              placeholder="10.0.0.0/8"
+              placeholder={t("exclusions.cidrPlaceholder")}
               style={{ width: "200px" }}
             />
           </div>
-          <Button label="Добавить" icon="pi pi-plus" loading={loading} onClick={handleAdd} />
+          <Button
+            label={t("exclusions.add")}
+            icon="pi pi-plus"
+            loading={loading}
+            onClick={handleAdd}
+          />
           {items.length > 0 && (
             <Button
-              label="Очистить все"
+              label={t("common.clearAll")}
               icon="pi pi-trash"
               severity="danger"
               outlined
@@ -182,28 +192,28 @@ export default function Exclusions() {
         </div>
       </Card>
 
-      <Card title={`Текущие правила (${items.length})`} className="mt-3">
-        <DataTable value={items} emptyMessage="Исключений нет" size="small" stripedRows>
+      <Card title={t("exclusions.current", { count: items.length })} className="mt-3">
+        <DataTable value={items} emptyMessage={t("exclusions.empty")} size="small" stripedRows>
           <Column
             field="kind"
-            header="Тип"
+            header={t("exclusions.kind")}
             body={(m: Matcher) => (
               <Tag
-                value={kindLabel[m.kind] ?? m.kind}
+                value={kindKey[m.kind] ? t(kindKey[m.kind]) : m.kind}
                 severity={kindSeverity[m.kind] ?? "secondary"}
               />
             )}
             style={{ width: "180px" }}
           />
-          <Column field="value" header="Значение" />
+          <Column field="value" header={t("exclusions.value")} />
           <Column
-            header="Действие"
+            header={t("exclusions.action")}
             body={(m: Matcher) => (
               <Button
                 icon="pi pi-trash"
                 severity="danger"
                 text
-                tooltip="Удалить"
+                tooltip={t("exclusions.deleteTooltip")}
                 onClick={() => handleDelete(m)}
               />
             )}

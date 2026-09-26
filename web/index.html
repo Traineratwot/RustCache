@@ -4,6 +4,35 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RustCache</title>
+    <link rel="preload" as="style" href="/themes/lara-light-indigo.css" />
+    <link rel="preload" as="style" href="/themes/lara-dark-indigo.css" />
+    <link id="pt-theme" rel="stylesheet" href="/themes/lara-light-indigo.css" />
+    <script>
+      (function () {
+        try {
+          var mode = localStorage.getItem("rustcache.theme") || "auto";
+          var dark =
+            mode === "dark" ||
+            (mode === "auto" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          var href = dark
+            ? "/themes/lara-dark-indigo.css"
+            : "/themes/lara-light-indigo.css";
+          document.getElementById("pt-theme").href = href;
+          document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+
+          var lm = localStorage.getItem("rustcache.lang") || "auto";
+          var lang =
+            lm === "ru" || lm === "en"
+              ? lm
+              : (navigator.language || "en").toLowerCase().indexOf("ru") === 0
+                ? "ru"
+                : "en";
+          document.documentElement.lang = lang;
+        } catch (e) {
+          /* keep defaults */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

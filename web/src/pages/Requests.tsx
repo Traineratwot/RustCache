@@ -6,9 +6,11 @@ import { Dropdown } from "primereact/dropdown";
 import { InputText } from "primereact/inputtext";
 import { Tag } from "primereact/tag";
 import { Toast } from "primereact/toast";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { clearRequests, getRequests } from "../api/client";
 import type { ReqRecord, RequestQuery } from "../api/types";
+import { fmtBytes, fmtDateTime } from "../lib/format";
 
 function outcomeSeverity(outcome: string): "success" | "info" | "warning" | "danger" | "secondary" {
   switch (outcome) {
@@ -27,56 +29,6 @@ function outcomeSeverity(outcome: string): "success" | "info" | "warning" | "dan
       return "danger";
   }
 }
-
-function fmtTs(ts: number): string {
-  return new Date(ts).toLocaleTimeString("ru-RU");
-}
-
-function fmtBytes(n: number): string {
-  if (n < 1024) return `${n} Б`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} КБ`;
-  return `${(n / 1024 / 1024).toFixed(2)} МБ`;
-}
-
-const METHOD_OPTIONS = [
-  { label: "Все методы", value: "" },
-  { label: "GET", value: "GET" },
-  { label: "POST", value: "POST" },
-  { label: "PUT", value: "PUT" },
-  { label: "DELETE", value: "DELETE" },
-  { label: "HEAD", value: "HEAD" },
-  { label: "OPTIONS", value: "OPTIONS" },
-  { label: "CONNECT", value: "CONNECT" },
-  { label: "PATCH", value: "PATCH" },
-];
-
-const OUTCOME_OPTIONS = [
-  { label: "Все результаты", value: "" },
-  { label: "HIT", value: "HIT" },
-  { label: "MISS", value: "MISS" },
-  { label: "HIT_REVALIDATED", value: "HIT_REVALIDATED" },
-  { label: "REVALIDATED", value: "REVALIDATED" },
-  { label: "BYPASS", value: "BYPASS" },
-  { label: "TUNNEL", value: "TUNNEL" },
-  { label: "REJECT_CMD", value: "REJECT_CMD" },
-  { label: "ERROR", value: "ERROR" },
-];
-
-const STATUS_OPTIONS = [
-  { label: "Все статусы", value: "" },
-  { label: "2xx", value: "2xx" },
-  { label: "3xx", value: "3xx" },
-  { label: "4xx", value: "4xx" },
-  { label: "5xx", value: "5xx" },
-];
-
-const TIME_OPTIONS = [
-  { label: "Всё время", value: "" },
-  { label: "1 час", value: "1h" },
-  { label: "24 часа", value: "24h" },
-  { label: "7 дней", value: "7d" },
-  { label: "30 дней", value: "30d" },
-];
 
 function statusRange(code: string): { status_min?: number; status_max?: number } {
   if (!code) return {};
@@ -102,6 +54,7 @@ function timeSince(key: string): number | undefined {
 }
 
 export default function Requests() {
+  const { t } = useTranslation();
   const [rows, setRows] = useState<ReqRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -119,6 +72,58 @@ export default function Requests() {
 
   const toast = useRef<Toast>(null);
   const reqSeq = useRef(0);
+
+  const methodOptions = useMemo(
+    () => [
+      { label: t("requests.allMethods"), value: "" },
+      { label: "GET", value: "GET" },
+      { label: "POST", value: "POST" },
+      { label: "PUT", value: "PUT" },
+      { label: "DELETE", value: "DELETE" },
+      { label: "HEAD", value: "HEAD" },
+      { label: "OPTIONS", value: "OPTIONS" },
+      { label: "CONNECT", value: "CONNECT" },
+      { label: "PATCH", value: "PATCH" },
+    ],
+    [t],
+  );
+
+  const outcomeOptions = useMemo(
+    () => [
+      { label: t("requests.allOutcomes"), value: "" },
+      { label: "HIT", value: "HIT" },
+      { label: "MISS", value: "MISS" },
+      { label: "HIT_REVALIDATED", value: "HIT_REVALIDATED" },
+      { label: "REVALIDATED", value: "REVALIDATED" },
+      { label: "BYPASS", value: "BYPASS" },
+      { label: "TUNNEL", value: "TUNNEL" },
+      { label: "REJECT_CMD", value: "REJECT_CMD" },
+      { label: "ERROR", value: "ERROR" },
+    ],
+    [t],
+  );
+
+  const statusOptions = useMemo(
+    () => [
+      { label: t("requests.allStatuses"), value: "" },
+      { label: "2xx", value: "2xx" },
+      { label: "3xx", value: "3xx" },
+      { label: "4xx", value: "4xx" },
+      { label: "5xx", value: "5xx" },
+    ],
+    [t],
+  );
+
+  const timeOptions = useMemo(
+    () => [
+      { label: t("requests.allTime"), value: "" },
+      { label: t("requests.time1h"), value: "1h" },
+      { label: t("requests.time24h"), value: "24h" },
+      { label: t("requests.time7d"), value: "7d" },
+      { label: t("requests.time30d"), value: "30d" },
+    ],
+    [t],
+  );
 
   const load = useCallback(async () => {
     const seq = ++reqSeq.current;
@@ -139,12 +144,11 @@ export default function Requests() {
       setError(null);
     } catch {
       if (seq !== reqSeq.current) return;
-      setError("Не удалось загрузить запросы");
+      setError(t("requests.loadError"));
     }
-  }, [q, method, outcome, statusCls, timeRange, limit, offset]);
+  }, [q, method, outcome, statusCls, timeRange, limit, offset, t]);
 
   useEffect(() => {
-    // reloadTick forces a refetch on demand
     void reloadTick;
     load();
   }, [load, reloadTick]);
@@ -160,13 +164,13 @@ export default function Requests() {
   const onFilterChange = (setter: (v: string) => void) => (value: unknown) => {
     setter(String(value ?? ""));
     setOffset(0);
-    setReloadTick((t) => t + 1);
+    setReloadTick((n) => n + 1);
   };
 
   const handleClear = () => {
     confirmDialog({
-      message: "Удалить все записи журнала запросов?",
-      header: "Очистка журнала",
+      message: t("requests.clearConfirm"),
+      header: t("requests.clearTitle"),
       icon: "pi pi-exclamation-triangle",
       acceptClassName: "p-button-danger",
       accept: async () => {
@@ -175,16 +179,16 @@ export default function Requests() {
           const r = await clearRequests();
           toast.current?.show({
             severity: "success",
-            summary: "Готово",
-            detail: `Удалено записей: ${r.deleted}`,
+            summary: t("common.done"),
+            detail: t("requests.deleted", { count: r.deleted }),
           });
           setOffset(0);
           await load();
         } catch {
           toast.current?.show({
             severity: "error",
-            summary: "Ошибка",
-            detail: "Не удалось очистить журнал",
+            summary: t("common.error"),
+            detail: t("requests.clearError"),
           });
         } finally {
           setBusy(false);
@@ -197,7 +201,7 @@ export default function Requests() {
     <>
       <Toast ref={toast} />
       <ConfirmDialog />
-      <h1 className="page-title">Запросы</h1>
+      <h1 className="page-title">{t("requests.title")}</h1>
       {error && <p style={{ color: "var(--red-500)" }}>{error}</p>}
 
       <div className="flex flex-wrap align-items-center gap-2 mb-3">
@@ -210,15 +214,15 @@ export default function Requests() {
               setOffset(0);
             }}
             onKeyDown={(e) => {
-              if (e.key === "Enter") setReloadTick((t) => t + 1);
+              if (e.key === "Enter") setReloadTick((n) => n + 1);
             }}
-            placeholder="Поиск по URL, host..."
+            placeholder={t("requests.searchPlaceholder")}
             style={{ width: "240px" }}
           />
         </span>
         <Dropdown
           value={method}
-          options={METHOD_OPTIONS}
+          options={methodOptions}
           optionLabel="label"
           optionValue="value"
           onChange={(e) => onFilterChange(setMethod)(e.value)}
@@ -226,7 +230,7 @@ export default function Requests() {
         />
         <Dropdown
           value={outcome}
-          options={OUTCOME_OPTIONS}
+          options={outcomeOptions}
           optionLabel="label"
           optionValue="value"
           onChange={(e) => onFilterChange(setOutcome)(e.value)}
@@ -234,7 +238,7 @@ export default function Requests() {
         />
         <Dropdown
           value={statusCls}
-          options={STATUS_OPTIONS}
+          options={statusOptions}
           optionLabel="label"
           optionValue="value"
           onChange={(e) => onFilterChange(setStatusCls)(e.value)}
@@ -242,20 +246,20 @@ export default function Requests() {
         />
         <Dropdown
           value={timeRange}
-          options={TIME_OPTIONS}
+          options={timeOptions}
           optionLabel="label"
           optionValue="value"
           onChange={(e) => onFilterChange(setTimeRange)(e.value)}
           style={{ width: "130px" }}
         />
         <Button
-          label={autoRefresh ? "Пауза" : "Продолжить"}
+          label={autoRefresh ? t("requests.pause") : t("requests.resume")}
           icon={autoRefresh ? "pi pi-pause" : "pi pi-play"}
           text
           onClick={() => setAutoRefresh((v) => !v)}
         />
         <Button
-          label="Очистить"
+          label={t("requests.clear")}
           icon="pi pi-trash"
           severity="danger"
           outlined
@@ -263,8 +267,8 @@ export default function Requests() {
           onClick={handleClear}
         />
         <span className="text-color-secondary">
-          {autoRefresh ? "Автообновление 2 с · " : "Пауза · "}
-          {total} записей
+          {autoRefresh ? t("requests.autoRefreshOn") : t("requests.autoRefreshOff")}
+          {t("requests.records", { count: total })}
         </span>
       </div>
 
@@ -272,7 +276,7 @@ export default function Requests() {
         value={rows}
         size="small"
         stripedRows
-        emptyMessage="Нет запросов"
+        emptyMessage={t("requests.empty")}
         responsiveLayout="scroll"
         paginator
         rows={limit}
@@ -286,15 +290,15 @@ export default function Requests() {
       >
         <Column
           field="ts"
-          header="Время"
-          body={(r: ReqRecord) => fmtTs(r.ts)}
-          style={{ width: "100px" }}
+          header={t("requests.time")}
+          body={(r: ReqRecord) => fmtDateTime(r.ts)}
+          style={{ width: "140px" }}
         />
-        <Column field="method" header="Метод" style={{ width: "80px" }} />
+        <Column field="method" header={t("requests.method")} style={{ width: "80px" }} />
         <Column field="host" header="Host" style={{ width: "180px" }} />
         <Column
           field="url"
-          header="URL"
+          header={t("requests.url")}
           body={(r: ReqRecord) => (
             <span
               title={r.url}
@@ -311,22 +315,22 @@ export default function Requests() {
             </span>
           )}
         />
-        <Column field="status" header="Статус" style={{ width: "80px" }} />
+        <Column field="status" header={t("requests.status")} style={{ width: "80px" }} />
         <Column
           field="outcome"
-          header="Результат"
+          header={t("requests.result")}
           body={(r: ReqRecord) => <Tag value={r.outcome} severity={outcomeSeverity(r.outcome)} />}
           style={{ width: "130px" }}
         />
         <Column
           field="duration_ms"
-          header="Мс"
+          header={t("requests.ms")}
           body={(r: ReqRecord) => `${r.duration_ms}`}
           style={{ width: "70px" }}
         />
         <Column
           field="resp_bytes"
-          header="Размер"
+          header={t("requests.size")}
           body={(r: ReqRecord) => fmtBytes(r.resp_bytes)}
           style={{ width: "100px" }}
         />
