@@ -28,6 +28,17 @@ sudo apt install rustcache</code></pre>
     </section>
 
     <section>
+      <h2>Docker</h2>
+      <pre><code>docker run -d --name rustcache \
+  -p 3128:3128 -p 3129:3129 -p 1080:1080 \
+  -p 8080:8080 -p 8081:8081 \
+  -v rustcache-data:/var/lib/rustcache \
+  ghcr.io/traineratwot/rustcache:latest</code></pre>
+      <p>Web UI: <code>http://127.0.0.1:8080</code> · Image:
+        <a href="https://github.com/Traineratwot/RustCache/pkgs/container/rustcache">ghcr.io/traineratwot/rustcache</a></p>
+    </section>
+
+    <section>
       <h2>Packages</h2>
       <p>This directory is a flat APT repository (<code>pool/</code> + <code>Packages.gz</code>).</p>
       <!-- PACKAGES -->
