@@ -222,6 +222,12 @@ export default function Connect() {
               <strong>Linux (Firefox):</strong> {t("connect.pacLinux")}
             </li>
             <li>
+              <strong>macOS:</strong> {t("connect.pacMac")}
+            </li>
+            <li>
+              <strong>iPhone / iOS:</strong> {t("connect.pacIos")}
+            </li>
+            <li>
               <strong>Android:</strong> {t("connect.pacAndroid")}
             </li>
           </ul>
@@ -299,6 +305,94 @@ export default function Connect() {
               />
               <Code>{`curl --socks5 ${ip}:${socksPort} https://example.com/`}</Code>
             </Step>
+          </TabPanel>
+
+          <TabPanel header={t("connect.macos")} leftIcon="pi pi-apple">
+            <Step n={1}>
+              <Trans
+                i18nKey="connect.mac1"
+                components={{
+                  1: (
+                    <a href="/api/ca.crt" download>
+                      ca.crt
+                    </a>
+                  ),
+                }}
+              />
+              <Code>{`sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ca.crt`}</Code>
+              {t("connect.mac1undo")}{" "}
+              <Code>{`sudo security delete-certificate -c "RustCache CA" /Library/Keychains/System.keychain`}</Code>
+            </Step>
+            <Step n={2}>
+              <Trans
+                i18nKey="connect.mac2"
+                values={{ ip, port: httpPort }}
+                components={{ 1: <code />, 2: <code /> }}
+              />
+            </Step>
+            <Step n={3}>
+              {t("connect.mac3")}
+              <Code>{`sudo networksetup -setwebproxy "Wi-Fi" ${ip} ${httpPort}\nsudo networksetup -setsecurewebproxy "Wi-Fi" ${ip} ${httpPort}`}</Code>
+              {t("connect.mac3cancel")}{" "}
+              <Code>{`sudo networksetup -setwebproxystate "Wi-Fi" off\nsudo networksetup -setsecurewebproxystate "Wi-Fi" off`}</Code>
+            </Step>
+            <Step n={4}>
+              {t("connect.mac4")}
+              <Code>{`export http_proxy=http://${ip}:${httpPort}\nexport https_proxy=http://${ip}:${httpsPort}\nexport no_proxy=localhost,127.0.0.1`}</Code>
+            </Step>
+            <Step n={5}>
+              <Trans
+                i18nKey="connect.mac5"
+                values={{ port: socksPort }}
+                components={{ 1: <code /> }}
+              />
+              <Code>{`sudo networksetup -setsocksfirewallproxy "Wi-Fi" ${ip} ${socksPort}`}</Code>
+              <Trans
+                i18nKey="connect.mac5firefox"
+                values={{ ip, port: socksPort }}
+                components={{ 1: <code />, 2: <code /> }}
+              />
+            </Step>
+            <Divider />
+            <Message severity="info" className="w-full" text={t("connect.macNote")} />
+          </TabPanel>
+
+          <TabPanel header={t("connect.ios")} leftIcon="pi pi-mobile">
+            <Step n={1}>
+              <Trans
+                i18nKey="connect.ios1"
+                components={{
+                  1: (
+                    <a href="/api/ca.crt" download>
+                      ca.crt
+                    </a>
+                  ),
+                }}
+              />
+            </Step>
+            <Step n={2}>
+              <Trans
+                i18nKey="connect.ios2"
+                values={{ ip, port: httpPort }}
+                components={{ 1: <code />, 2: <code /> }}
+              />
+            </Step>
+            <Step n={3}>
+              <Trans
+                i18nKey="connect.ios3"
+                values={{ ip, port: pacPort }}
+                components={{ 1: <code /> }}
+              />
+            </Step>
+            <Step n={4}>{t("connect.ios4")}</Step>
+            <Divider />
+            <Message
+              severity="warn"
+              text={t("connect.andWarn", {
+                ports: `${httpPort}/${httpsPort}/${socksPort}`,
+                ip,
+              })}
+            />
           </TabPanel>
 
           <TabPanel header={t("connect.android")} leftIcon="pi pi-android">
