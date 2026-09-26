@@ -166,6 +166,7 @@ async fn pac_mode_http_only() {
         enabled: true,
         bind: "0.0.0.0:8081".into(),
         mode: PacMode::Http,
+        ..Default::default()
     };
     let state = ApiState {
         engine,
@@ -178,4 +179,67 @@ async fn pac_mode_http_only() {
     let (_s, _h, body) = get_pac_response(state, "/proxy.pac", "192.168.1.1").await;
     assert!(body.contains("PROXY 192.168.1.1:"));
     assert!(!body.contains("SOCKS5"));
+}
+
+#[tokio::test]
+async fn preferred_ip_overrides_host_header() {
+    install_crypto();
+    let (engine, dir) = spawn_engine(ExclusionSet::default()).await;
+    let ca = generate_ca(dir.join("ca")).unwrap();
+    let mut cfg = Config::default();
+    cfg.pac = PacConfig {
+        preferred_ip: "10.9.9.9".into(),
+        ..Default::default()
+    };
+    let state = ApiState {
+        engine,
+        config: LiveConfig::new(cfg),
+        ca: Arc::new(ca),
+        config_path: dir.join("config.toml"),
+        started_at: std::time::Instant::now(),
+        listeners: Default::default(),
+    };
+    let (_s, _h, body) = get_pac_response(state, "/proxy.pac", "192.168.1.5").await;
+    assert!(body.contains("PROXY 10.9.9.9:"), "body={body}");
+    assert!(
+        !body.contains("PROXY 192.168.1.5:"),
+        "preferred must override Host: {body}"
+    );
+}
+
+#[tokio::test]
+async fn pac_info_lists_preferred_ip_first() {
+    install_crypto();
+    let (engine, dir) = spawn_engine(ExclusionSet::default()).await;
+    let ca = generate_ca(dir.join("ca")).unwrap();
+    let mut cfg = Config::default();
+    cfg.pac = PacConfig {
+        preferred_ip: "10.9.9.9".into(),
+        ..Default::default()
+    };
+    let state = ApiState {
+        engine,
+        config: LiveConfig::new(cfg),
+        ca: Arc::new(ca),
+        config_path: dir.join("config.toml"),
+        started_at: std::time::Instant::now(),
+        listeners: Default::default(),
+    };
+    let app = router(state);
+    let req = Request::builder()
+        .uri("/api/pac")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["preferred_ip"], "10.9.9.9");
+    let urls = v["urls"].as_array().unwrap();
+    assert!(
+        urls[0].as_str().unwrap().contains("10.9.9.9"),
+        "urls={urls:?}"
+    );
+    assert!(urls[0].as_str().unwrap().contains("/proxy.pac"));
 }

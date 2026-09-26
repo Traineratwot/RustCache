@@ -14,21 +14,31 @@ pub struct PacParams<'a> {
     pub matchers: &'a [Matcher],
 }
 
+/// Bracket IPv6 literals for `host:port` interpolation in PAC returns.
+pub fn pac_host(host: &str) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
+}
+
 /// Render `FindProxyForURL` for the given params.
 ///
 /// JS matcher semantics mirror `rustcache_core::excl::matchers::Matcher`.
 /// HTTPS is routed to the MITM port: the plain HTTP proxy only tunnels CONNECT.
 pub fn generate_pac(p: &PacParams<'_>) -> String {
+    let h = pac_host(p.proxy_host);
     let https_return = match p.mode {
-        PacMode::Socks => format!("SOCKS5 {}:{}; DIRECT", p.proxy_host, p.socks_port),
-        _ => format!("PROXY {}:{}; DIRECT", p.proxy_host, p.https_port),
+        PacMode::Socks => format!("SOCKS5 {h}:{}; DIRECT", p.socks_port),
+        _ => format!("PROXY {h}:{}; DIRECT", p.https_port),
     };
     let http_return = match p.mode {
-        PacMode::Http => format!("PROXY {}:{}; DIRECT", p.proxy_host, p.http_port),
-        PacMode::Socks => format!("SOCKS5 {}:{}; DIRECT", p.proxy_host, p.socks_port),
+        PacMode::Http => format!("PROXY {h}:{}; DIRECT", p.http_port),
+        PacMode::Socks => format!("SOCKS5 {h}:{}; DIRECT", p.socks_port),
         PacMode::HttpSocks => format!(
-            "PROXY {}:{}; SOCKS5 {}:{}; DIRECT",
-            p.proxy_host, p.http_port, p.proxy_host, p.socks_port
+            "PROXY {h}:{}; SOCKS5 {h}:{}; DIRECT",
+            p.http_port, p.socks_port
         ),
     };
 
@@ -249,5 +259,26 @@ mod tests {
         assert!(pac.contains("function FindProxyForURL"));
         assert!(pac.contains("PROXY 192.168.1.5:3128"));
         assert!(pac.contains("PROXY 192.168.1.5:3129"));
+    }
+
+    #[test]
+    fn pac_host_brackets_ipv6() {
+        assert_eq!(pac_host("::1"), "[::1]");
+        assert_eq!(pac_host("2001:db8::1"), "[2001:db8::1]");
+        assert_eq!(pac_host("192.168.1.5"), "192.168.1.5");
+        assert_eq!(pac_host("proxy.lan"), "proxy.lan");
+        assert_eq!(pac_host("[::1]"), "[::1]");
+    }
+
+    #[test]
+    fn ipv6_host_is_bracketed_in_body() {
+        let empty: Vec<Matcher> = vec![];
+        let p = PacParams {
+            proxy_host: "::1",
+            ..params(PacMode::HttpSocks, &empty)
+        };
+        let pac = generate_pac(&p);
+        assert!(pac.contains("PROXY [::1]:3128"), "body={pac}");
+        assert!(pac.contains("SOCKS5 [::1]:1080"), "body={pac}");
     }
 }

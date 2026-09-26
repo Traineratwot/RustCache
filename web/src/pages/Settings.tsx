@@ -345,6 +345,17 @@ export default function Settings() {
               }
             />
           </Field>
+          <Field
+            label={t("settings.cacheOptimistic")}
+            hint={t("settings.cacheOptimisticHint")}
+            apply="hot"
+            error={fieldErrors["cache.optimistic"]}
+          >
+            <InputSwitch
+              checked={form.cache.optimistic}
+              onChange={(e) => patch((f) => ({ ...f, cache: { ...f.cache, optimistic: e.value } }))}
+            />
+          </Field>
           <p className="text-color-secondary mb-0" style={{ fontSize: "0.85rem" }}>
             {t("settings.cacheDirLabel")}: <code>{form.cache.dir}</code>
             <PathResolved dataDir={form.data_dir} value={form.cache.dir} />
@@ -390,6 +401,22 @@ export default function Settings() {
               onChange={(e) => patch((f) => ({ ...f, pac: { ...f.pac, mode: e.value } }))}
               className="w-full"
               disabled={!form.pac.enabled}
+            />
+          </Field>
+          <Field
+            label={t("settings.pacPreferredIp")}
+            hint={t("settings.pacPreferredIpHint")}
+            apply="hot"
+            error={fieldErrors["pac.preferred_ip"]}
+          >
+            <InputText
+              value={form.pac.preferred_ip}
+              className="w-full"
+              disabled={!form.pac.enabled}
+              placeholder="auto"
+              onChange={(e) =>
+                patch((f) => ({ ...f, pac: { ...f.pac, preferred_ip: e.target.value } }))
+              }
             />
           </Field>
         </Card>

@@ -21,6 +21,8 @@ bind = "127.0.0.1:8080"
 dir = "cache"            # relative → $data_dir/cache
 max_bytes = 2147483648
 max_object_bytes = 52428800
+# Serve stale entries immediately and revalidate in the background (HIT_STALE).
+optimistic = true
 
 [exclude]
 domains = ["*.local", "bank.example", "exact.host"]
@@ -39,3 +41,6 @@ cleanup_interval_secs = 300
 enabled = true
 bind = "0.0.0.0:8081"
 mode = "http+socks"   # "http" | "socks" | "http+socks"
+# Host always embedded in the PAC body. Empty = automatic (request Host header,
+# else best LAN IPv4). Non-empty overrides Host. Hot-applied.
+preferred_ip = ""

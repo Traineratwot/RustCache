@@ -7,6 +7,7 @@
 export const OUTCOMES = [
   "HIT",
   "HIT_REVALIDATED",
+  "HIT_STALE",
   "REVALIDATED",
   "MISS",
   "BYPASS",
@@ -28,6 +29,7 @@ export function outcomeSeverity(outcome: string): Severity {
   switch (outcome) {
     case "HIT":
     case "HIT_REVALIDATED":
+    case "HIT_STALE":
       return "success";
     case "MISS":
     case "REVALIDATED":

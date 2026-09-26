@@ -87,6 +87,7 @@ impl ApiState {
         self.engine.set_exclusions(set).await;
         self.engine
             .set_cache_limits(cfg.cache.max_object_bytes, cfg.cache.max_bytes);
+        self.engine.set_optimistic(cfg.cache.optimistic);
         Ok(())
     }
 }

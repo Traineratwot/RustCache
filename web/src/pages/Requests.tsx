@@ -81,6 +81,7 @@ export default function Requests() {
       { label: "HIT", value: "HIT" },
       { label: "MISS", value: "MISS" },
       { label: "HIT_REVALIDATED", value: "HIT_REVALIDATED" },
+      { label: "HIT_STALE", value: "HIT_STALE" },
       { label: "REVALIDATED", value: "REVALIDATED" },
       { label: "BYPASS", value: "BYPASS" },
       { label: "TUNNEL", value: "TUNNEL" },

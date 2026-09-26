@@ -136,6 +136,7 @@ async fn run(config_path: PathBuf, data_dir: Option<PathBuf>) -> anyhow::Result<
         cfg.cache.max_object_bytes,
         cfg.cache.max_bytes,
     ));
+    engine.set_optimistic(cfg.cache.optimistic);
 
     let ca = load_ca(&ca_dir)?;
     let leaves = Arc::new(LeafIssuer::from_ca(&ca)?);
@@ -176,6 +177,7 @@ async fn run(config_path: PathBuf, data_dir: Option<PathBuf>) -> anyhow::Result<
                     let set = ExclusionSet::from_specs(&cfg.exclude.domains, &cfg.exclude.cidrs);
                     engine.set_exclusions(set).await;
                     engine.set_cache_limits(cfg.cache.max_object_bytes, cfg.cache.max_bytes);
+                    engine.set_optimistic(cfg.cache.optimistic);
                     live.set(cfg).await;
                 }
             }

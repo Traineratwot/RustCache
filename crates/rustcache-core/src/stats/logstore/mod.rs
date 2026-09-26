@@ -608,7 +608,7 @@ mod tests {
             assert_eq!(s.bytes_saved, 0);
             assert_eq!(s.avg_duration_ms, 0.0);
             assert_eq!(s.max_duration_ms, 0);
-            assert_eq!(s.by_outcome.len(), 8);
+            assert_eq!(s.by_outcome.len(), 9);
             assert!(s.top_hosts.is_empty());
             assert!(s.series.is_empty());
             assert_eq!(s.bucket_ms, 60_000);
@@ -652,14 +652,14 @@ mod tests {
             store.flush().await.expect("flush");
 
             let s = store.stats(LogStatsQuery::default()).await.expect("stats");
-            assert_eq!(s.by_outcome.len(), 8);
+            assert_eq!(s.by_outcome.len(), 9);
             assert_eq!(s.by_outcome[0].outcome, Outcome::Hit);
             assert_eq!(s.by_outcome[0].count, 1);
-            assert_eq!(s.by_outcome[3].outcome, Outcome::Miss);
-            assert_eq!(s.by_outcome[3].count, 1);
+            assert_eq!(s.by_outcome[4].outcome, Outcome::Miss);
+            assert_eq!(s.by_outcome[4].count, 1);
             assert_eq!(s.by_outcome[1].count, 0);
-            assert_eq!(s.by_outcome[7].outcome, Outcome::RejectCmd);
-            assert_eq!(s.by_outcome[7].count, 0);
+            assert_eq!(s.by_outcome[8].outcome, Outcome::RejectCmd);
+            assert_eq!(s.by_outcome[8].count, 0);
         });
     }
 

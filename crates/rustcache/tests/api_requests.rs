@@ -268,7 +268,7 @@ async fn log_stats_shape() {
     assert!(v["series"].is_array());
 
     let by = v["by_outcome"].as_array().unwrap();
-    assert_eq!(by.len(), 8);
+    assert_eq!(by.len(), 9);
     let hit = by.iter().find(|r| r["outcome"] == "HIT").unwrap();
     assert_eq!(hit["count"], 1);
     let miss = by.iter().find(|r| r["outcome"] == "MISS").unwrap();
@@ -286,7 +286,7 @@ async fn log_stats_empty_db() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["total"], 0);
     assert_eq!(v["hit_rate"], 0.0);
-    assert_eq!(v["by_outcome"].as_array().unwrap().len(), 8);
+    assert_eq!(v["by_outcome"].as_array().unwrap().len(), 9);
     assert!(v["top_hosts"].as_array().unwrap().is_empty());
     assert!(v["series"].as_array().unwrap().is_empty());
 }

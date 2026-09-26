@@ -130,6 +130,10 @@ pub struct CacheConfig {
     pub max_bytes: u64,
     #[serde(default = "default_max_object_bytes")]
     pub max_object_bytes: u64,
+    /// Serve stale cache entries immediately and revalidate in the background
+    /// (stale-while-revalidate). Hot-applied.
+    #[serde(default = "default_cache_optimistic")]
+    pub optimistic: bool,
 }
 
 impl Default for CacheConfig {
@@ -138,8 +142,13 @@ impl Default for CacheConfig {
             dir: default_cache_dir(),
             max_bytes: default_max_bytes(),
             max_object_bytes: default_max_object_bytes(),
+            optimistic: default_cache_optimistic(),
         }
     }
+}
+
+fn default_cache_optimistic() -> bool {
+    true
 }
 
 fn default_cache_dir() -> String {
@@ -198,6 +207,10 @@ pub struct PacConfig {
     pub bind: String,
     #[serde(default)]
     pub mode: PacMode,
+    /// Host always embedded in the PAC body. Empty = automatic (request Host
+    /// header, else best LAN IPv4). Non-empty overrides the Host header.
+    #[serde(default = "default_pac_preferred_ip")]
+    pub preferred_ip: String,
 }
 
 impl Default for PacConfig {
@@ -206,6 +219,7 @@ impl Default for PacConfig {
             enabled: default_pac_enabled(),
             bind: default_pac_bind(),
             mode: PacMode::default(),
+            preferred_ip: default_pac_preferred_ip(),
         }
     }
 }
@@ -216,6 +230,10 @@ fn default_pac_enabled() -> bool {
 
 fn default_pac_bind() -> String {
     "0.0.0.0:8081".into()
+}
+
+fn default_pac_preferred_ip() -> String {
+    String::new()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -337,6 +355,7 @@ bind = "127.0.0.1:8080"
 dir = "/tmp/rc"
 max_bytes = 100
 max_object_bytes = 10
+optimistic = false
 [exclude]
 domains = ["*.local"]
 cidrs = ["10.0.0.0/8"]
@@ -347,6 +366,7 @@ dir = "/tmp/ca"
         .unwrap();
         assert_eq!(cfg.http.port, 3128);
         assert_eq!(cfg.cache.max_bytes, 100);
+        assert!(!cfg.cache.optimistic);
         assert_eq!(cfg.exclude.domains, vec!["*.local"]);
     }
 
@@ -359,6 +379,7 @@ dir = "/tmp/ca"
         assert_eq!(cfg.pac.bind, "0.0.0.0:8081");
         assert_eq!(cfg.pac.mode, PacMode::HttpSocks);
         assert_eq!(cfg.cache.dir, "cache");
+        assert!(cfg.cache.optimistic);
         assert_eq!(cfg.ca.dir, "ca");
         assert_eq!(cfg.logs.db_path, "logs.db");
         assert_eq!(cfg.logs.max_rows, 10_000);
@@ -453,12 +474,14 @@ cleanup_interval_secs = 60
 enabled = false
 bind = "0.0.0.0:9090"
 mode = "http"
+preferred_ip = "10.0.0.5"
 "#,
         )
         .unwrap();
         assert!(!cfg.pac.enabled);
         assert_eq!(cfg.pac.bind, "0.0.0.0:9090");
         assert_eq!(cfg.pac.mode, PacMode::Http);
+        assert_eq!(cfg.pac.preferred_ip, "10.0.0.5");
 
         let cfg: Config = toml::from_str(
             r#"
@@ -468,6 +491,7 @@ mode = "socks"
         )
         .unwrap();
         assert_eq!(cfg.pac.mode, PacMode::Socks);
+        assert_eq!(cfg.pac.preferred_ip, "");
 
         let cfg: Config = toml::from_str(
             r#"

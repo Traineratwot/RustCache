@@ -14,6 +14,10 @@ pub enum Outcome {
     /// Stale entry revalidated with the origin (304) and served from cache.
     #[serde(rename = "HIT_REVALIDATED")]
     HitRevalidated,
+    /// Stale entry served immediately; origin revalidation runs in the
+    /// background (optimistic / stale-while-revalidate).
+    #[serde(rename = "HIT_STALE")]
+    HitStale,
     /// Revalidation returned a new body that replaced the stored entry.
     #[serde(rename = "REVALIDATED")]
     Revalidated,
@@ -37,9 +41,10 @@ pub enum Outcome {
 impl Outcome {
     /// Every canonical outcome, in stable display order (always present in
     /// `by_outcome` stats, zero-filled).
-    pub const ALL: [Outcome; 8] = [
+    pub const ALL: [Outcome; 9] = [
         Outcome::Hit,
         Outcome::HitRevalidated,
+        Outcome::HitStale,
         Outcome::Revalidated,
         Outcome::Miss,
         Outcome::Bypass,
@@ -53,6 +58,7 @@ impl Outcome {
         match self {
             Outcome::Hit => "HIT",
             Outcome::HitRevalidated => "HIT_REVALIDATED",
+            Outcome::HitStale => "HIT_STALE",
             Outcome::Revalidated => "REVALIDATED",
             Outcome::Miss => "MISS",
             Outcome::Bypass => "BYPASS",
@@ -64,7 +70,10 @@ impl Outcome {
 
     /// True for outcomes that mean the response came from cache.
     pub fn is_hit(self) -> bool {
-        matches!(self, Outcome::Hit | Outcome::HitRevalidated)
+        matches!(
+            self,
+            Outcome::Hit | Outcome::HitRevalidated | Outcome::HitStale
+        )
     }
 
     /// True for outcomes that count against cache miss rate.
@@ -78,6 +87,7 @@ impl Outcome {
         match s {
             "HIT" => Outcome::Hit,
             "HIT_REVALIDATED" => Outcome::HitRevalidated,
+            "HIT_STALE" => Outcome::HitStale,
             "REVALIDATED" => Outcome::Revalidated,
             "MISS" => Outcome::Miss,
             "BYPASS" => Outcome::Bypass,
@@ -106,6 +116,10 @@ mod tests {
             "\"HIT_REVALIDATED\""
         );
         assert_eq!(
+            serde_json::to_string(&Outcome::HitStale).unwrap(),
+            "\"HIT_STALE\""
+        );
+        assert_eq!(
             serde_json::from_str::<Outcome>("\"MISS\"").unwrap(),
             Outcome::Miss
         );
@@ -119,6 +133,7 @@ mod tests {
             vec![
                 "HIT",
                 "HIT_REVALIDATED",
+                "HIT_STALE",
                 "REVALIDATED",
                 "MISS",
                 "BYPASS",

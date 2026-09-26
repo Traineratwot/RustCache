@@ -25,7 +25,17 @@ fn is_loopback_name(h: &str) -> bool {
 }
 
 /// Resolve the proxy host embedded in the PAC body.
-fn resolve_proxy_host(host_header: Option<&str>) -> String {
+///
+/// `preferred_ip` (when non-empty) always wins so clients get a stable host
+/// regardless of how they fetched the PAC file.
+fn resolve_proxy_host(host_header: Option<&str>, preferred_ip: &str) -> String {
+    let preferred = preferred_ip
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    if !preferred.is_empty() {
+        return preferred.to_string();
+    }
     let host = host_header.map(host_part).unwrap_or_default();
     if host.is_empty() || is_loopback_name(&host) {
         best_lan_ipv4().unwrap_or_else(|| "127.0.0.1".into())
@@ -44,7 +54,7 @@ pub async fn proxy_pac(State(st): State<ApiState>, headers: HeaderMap) -> Respon
     let host = headers
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok());
-    let proxy_host = resolve_proxy_host(host);
+    let proxy_host = resolve_proxy_host(host, &cfg.pac.preferred_ip);
     let body = generate_pac(&PacParams {
         proxy_host: &proxy_host,
         http_port: cfg.http.port,
@@ -74,12 +84,21 @@ pub async fn proxy_pac(State(st): State<ApiState>, headers: HeaderMap) -> Respon
 pub async fn pac_info(State(st): State<ApiState>) -> Json<serde_json::Value> {
     let cfg = st.config.get().await;
     let port = port_of_bind(&cfg.pac.bind);
+    let preferred = cfg.pac.preferred_ip.trim().to_string();
     let ips = lan_ipv4s();
-    let hosts: Vec<String> = if ips.is_empty() {
+    let mut hosts: Vec<String> = if ips.is_empty() {
         vec!["127.0.0.1".into()]
     } else {
         ips
     };
+    if !preferred.is_empty() {
+        let p = preferred
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string();
+        hosts.retain(|h| h != &p);
+        hosts.insert(0, p);
+    }
     let mut urls = Vec::new();
     for ip in &hosts {
         urls.push(format!("http://{ip}:{port}/proxy.pac"));
@@ -90,6 +109,7 @@ pub async fn pac_info(State(st): State<ApiState>) -> Json<serde_json::Value> {
         "mode": mode_str(cfg.pac.mode),
         "bind": cfg.pac.bind,
         "port": port,
+        "preferred_ip": preferred,
         "urls": urls,
     }))
 }

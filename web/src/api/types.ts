@@ -92,6 +92,7 @@ export interface Config {
     dir: string;
     max_bytes: number;
     max_object_bytes: number;
+    optimistic: boolean;
   };
   exclude: {
     domains: string[];
@@ -102,6 +103,7 @@ export interface Config {
     enabled: boolean;
     bind: string;
     mode: PacMode;
+    preferred_ip: string;
   };
   logs: {
     db_path: string;
@@ -130,6 +132,7 @@ export interface PacInfo {
   mode: PacMode;
   bind: string;
   port: number;
+  preferred_ip: string;
   urls: string[];
 }
 

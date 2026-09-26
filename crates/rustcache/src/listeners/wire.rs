@@ -209,6 +209,7 @@ pub async fn write_http_response<W: AsyncWriteExt + Unpin>(
 ///
 /// - `X-RustCache-Version` — build version
 /// - `X-RustCache-Status` — cache outcome (`HIT` / `MISS` / `HIT_REVALIDATED` /
+///   `HIT_STALE` /
 ///   `REVALIDATED` / `BYPASS` / `ERROR`)
 /// - `X-RustCache-Age` — seconds since the body was stored (cached paths only)
 ///

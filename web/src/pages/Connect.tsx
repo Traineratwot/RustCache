@@ -105,9 +105,16 @@ export default function Connect() {
       ]);
       setCfg(c);
       setPac(p);
-      const ips = net.local_ips.length > 0 ? net.local_ips : ["127.0.0.1"];
-      setLocalIps(ips);
-      setSelectedIp((prev) => (ips.includes(prev) ? prev : ips[0]));
+      const preferred = (p?.preferred_ip ?? "").trim();
+      const base = net.local_ips.length > 0 ? [...net.local_ips] : ["127.0.0.1"];
+      if (!base.includes("127.0.0.1")) base.push("127.0.0.1");
+      if (preferred && !base.includes(preferred)) base.unshift(preferred);
+      setLocalIps(base);
+      setSelectedIp((prev) => {
+        if (preferred && base.includes(preferred)) return preferred;
+        if (base.includes(prev)) return prev;
+        return base[0];
+      });
     } catch {
       setLocalIps(["127.0.0.1"]);
       setSelectedIp("127.0.0.1");
@@ -142,6 +149,8 @@ export default function Connect() {
   const ip = selectedIp;
   const pacPort = pac?.port ?? DEFAULT_PORTS.pac;
   const pacUrl = `http://${ip}:${pacPort}/proxy.pac`;
+  const wpadUrl = `http://${ip}:${pacPort}/wpad.dat`;
+  const preferred = (pac?.preferred_ip ?? "").trim();
   const pacModeLabel =
     pac?.mode === "http"
       ? t("connect.pacModeHttp")
@@ -160,18 +169,20 @@ export default function Connect() {
         {localIps.map((lip) => (
           <IpCard
             key={lip}
-            label={lip.startsWith("172.") ? t("connect.dockerIp") : t("connect.lanIp")}
+            label={
+              lip === preferred
+                ? t("connect.preferred")
+                : lip.startsWith("172.")
+                  ? t("connect.dockerIp")
+                  : lip === "127.0.0.1"
+                    ? t("connect.loopback")
+                    : t("connect.lanIp")
+            }
             ip={lip}
             selected={selectedIp === lip}
             onSelect={() => setSelectedIp(lip)}
           />
         ))}
-        <IpCard
-          label={t("connect.loopback")}
-          ip="127.0.0.1"
-          selected={selectedIp === "127.0.0.1"}
-          onSelect={() => setSelectedIp("127.0.0.1")}
-        />
         {externalIp && (
           <IpCard
             label={t("connect.external")}
@@ -206,32 +217,104 @@ export default function Connect() {
               text
               onClick={() => copy(pacUrl)}
             />
+            <Button
+              label={t("connect.copyWpadUrl")}
+              icon="pi pi-copy"
+              text
+              onClick={() => copy(wpadUrl)}
+            />
           </div>
           <p>
             <Trans
               i18nKey="connect.wpadAlso"
-              values={{ url: `http://${ip}:${pacPort}/wpad.dat` }}
+              values={{ url: wpadUrl }}
               components={{ 1: <code />, 2: <code /> }}
             />
           </p>
-          <ul style={{ lineHeight: "1.7", paddingLeft: "1.25rem" }}>
-            <li>
-              <strong>Windows:</strong> {t("connect.pacWin")}
-            </li>
-            <li>
-              <strong>Linux (Firefox):</strong> {t("connect.pacLinux")}
-            </li>
-            <li>
-              <strong>macOS:</strong> {t("connect.pacMac")}
-            </li>
-            <li>
-              <strong>iPhone / iOS:</strong> {t("connect.pacIos")}
-            </li>
-            <li>
-              <strong>Android:</strong> {t("connect.pacAndroid")}
-            </li>
-          </ul>
-          <Message severity="info" className="w-full" text={t("connect.pacExclusionsNote")} />
+          <TabView>
+            <TabPanel header={t("connect.windows")} leftIcon="pi pi-microsoft">
+              <Step n={1}>
+                <Trans i18nKey="connect.pacWinScript" components={{ 1: <code /> }} />
+                <Code>{pacUrl}</Code>
+              </Step>
+              <Step n={2}>
+                {t("connect.pacWinIe")}
+                <Code>{pacUrl}</Code>
+              </Step>
+              <Step n={3}>{t("connect.pacWinWpad")}</Step>
+              <Step n={4}>
+                {t("connect.pacBothUrls")}
+                <Code>{`${pacUrl}\n${wpadUrl}`}</Code>
+              </Step>
+            </TabPanel>
+
+            <TabPanel header={t("connect.linux")} leftIcon="pi pi-desktop">
+              <Step n={1}>
+                {t("connect.pacLinFirefox")}
+                <Code>{pacUrl}</Code>
+              </Step>
+              <Step n={2}>{t("connect.pacLinGnome")}</Step>
+              <Step n={3}>
+                {t("connect.pacLinGnomeCmd")}
+                <Code>{`gsettings set org.gnome.system.proxy mode 'auto'\ngsettings set org.gnome.system.proxy autoconfig-url '${pacUrl}'`}</Code>
+              </Step>
+              <Step n={4}>
+                {t("connect.pacLinKde")}
+                <Code>{pacUrl}</Code>
+              </Step>
+              <Step n={5}>{t("connect.pacLinNote")}</Step>
+            </TabPanel>
+
+            <TabPanel header={t("connect.macos")} leftIcon="pi pi-apple">
+              <Step n={1}>
+                {t("connect.pacMacSys")}
+                <Code>{pacUrl}</Code>
+              </Step>
+              <Step n={2}>
+                {t("connect.pacMacCli")}
+                <Code>{`sudo networksetup -setautoproxyurl "Wi-Fi" ${pacUrl}\nsudo networksetup -setautoproxystate "Wi-Fi" on`}</Code>
+              </Step>
+              <Step n={3}>
+                {t("connect.pacMacCliCancel")}
+                <Code>{`sudo networksetup -setautoproxystate "Wi-Fi" off`}</Code>
+              </Step>
+              <Divider />
+              <Message severity="info" className="w-full" text={t("connect.macNote")} />
+            </TabPanel>
+
+            <TabPanel header={t("connect.ios")} leftIcon="pi pi-mobile">
+              <Step n={1}>
+                {t("connect.pacIosAuto")}
+                <Code>{pacUrl}</Code>
+              </Step>
+              <Step n={2}>{t("connect.pacIosNote")}</Step>
+              <Message
+                severity="warn"
+                className="w-full mt-2"
+                text={t("connect.andWarn", {
+                  ports: `${pacPort}, ${httpPort}, ${httpsPort}, ${socksPort}`,
+                  ip,
+                })}
+              />
+            </TabPanel>
+
+            <TabPanel header={t("connect.android")} leftIcon="pi pi-android">
+              <Step n={1}>
+                {t("connect.pacAndAuto")}
+                <Code>{pacUrl}</Code>
+              </Step>
+              <Step n={2}>{t("connect.pacAndNote")}</Step>
+              <Message
+                severity="warn"
+                className="w-full mt-2"
+                text={t("connect.andWarn", {
+                  ports: `${pacPort}, ${httpPort}, ${httpsPort}, ${socksPort}`,
+                  ip,
+                })}
+              />
+            </TabPanel>
+          </TabView>
+          <Message severity="info" className="w-full mt-3" text={t("connect.pacExclusionsNote")} />
         </Card>
       )}
 

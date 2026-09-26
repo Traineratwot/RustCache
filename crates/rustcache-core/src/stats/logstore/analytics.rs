@@ -40,9 +40,9 @@ pub(super) fn stats(conn: &Connection, q: &LogStatsQuery) -> anyhow::Result<LogS
                 COALESCE(MAX(duration_ms),0), \
                 COALESCE(MIN(ts),0), \
                 COALESCE(MAX(ts),0), \
-                COALESCE(SUM(CASE WHEN outcome IN ('HIT','HIT_REVALIDATED') THEN 1 ELSE 0 END),0), \
+                COALESCE(SUM(CASE WHEN outcome IN ('HIT','HIT_REVALIDATED','HIT_STALE') THEN 1 ELSE 0 END),0), \
                 COALESCE(SUM(CASE WHEN outcome IN ('MISS','REVALIDATED') THEN 1 ELSE 0 END),0), \
-                COALESCE(SUM(CASE WHEN outcome IN ('HIT','HIT_REVALIDATED') THEN resp_bytes ELSE 0 END),0) \
+                COALESCE(SUM(CASE WHEN outcome IN ('HIT','HIT_REVALIDATED','HIT_STALE') THEN resp_bytes ELSE 0 END),0) \
          FROM requests{}",
         filter.where_sql
     );
@@ -145,7 +145,7 @@ pub(super) fn stats(conn: &Connection, q: &LogStatsQuery) -> anyhow::Result<LogS
     // Q3: top_hosts
     let top_hosts_sql = format!(
         "SELECT host, COUNT(*), COALESCE(SUM(resp_bytes),0), \
-                COALESCE(SUM(CASE WHEN outcome IN ('HIT','HIT_REVALIDATED') THEN 1 ELSE 0 END),0) \
+                COALESCE(SUM(CASE WHEN outcome IN ('HIT','HIT_REVALIDATED','HIT_STALE') THEN 1 ELSE 0 END),0) \
          FROM requests{} GROUP BY host ORDER BY COUNT(*) DESC, host ASC LIMIT 10",
         filter.where_sql
     );
@@ -188,7 +188,7 @@ pub(super) fn stats(conn: &Connection, q: &LogStatsQuery) -> anyhow::Result<LogS
     if total > 0 {
         let series_sql = format!(
             "SELECT (ts / ?) * ? AS b, COUNT(*), \
-                    COALESCE(SUM(CASE WHEN outcome IN ('HIT','HIT_REVALIDATED') THEN 1 ELSE 0 END),0), \
+                    COALESCE(SUM(CASE WHEN outcome IN ('HIT','HIT_REVALIDATED','HIT_STALE') THEN 1 ELSE 0 END),0), \
                     COALESCE(SUM(CASE WHEN outcome IN ('MISS','REVALIDATED') THEN 1 ELSE 0 END),0), \
                     COALESCE(SUM(resp_bytes),0) \
              FROM requests{} GROUP BY b ORDER BY b",

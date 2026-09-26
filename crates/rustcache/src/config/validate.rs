@@ -272,6 +272,17 @@ pub fn validate_config(new: &Config, old: &Config) -> Result<(), Vec<FieldIssue>
         true
     };
 
+    // preferred_ip is hot (regenerated per PAC request) — not in restart_fields_diff.
+    {
+        let v = new.pac.preferred_ip.trim();
+        if !v.is_empty() && !is_valid_preferred_host(v) {
+            issues.push(issue(
+                "pac.preferred_ip",
+                "must be an IP address or hostname, or empty for auto",
+            ));
+        }
+    }
+
     // Internal conflicts: two listeners cannot share one port.
     {
         let mut used: Vec<(&'static str, u16)> = Vec::new();
@@ -368,6 +379,33 @@ pub fn validate_config(new: &Config, old: &Config) -> Result<(), Vec<FieldIssue>
     } else {
         Err(issues)
     }
+}
+
+/// IP (optionally `[ipv6]`) or simple hostname: no scheme/port/path/spaces.
+fn is_valid_preferred_host(v: &str) -> bool {
+    let bare = v.trim_start_matches('[').trim_end_matches(']');
+    if bare.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    if v.starts_with('[') || v.ends_with(']') {
+        return false;
+    }
+    if v.len() > 253 || v.contains(['/', ':', ' ']) {
+        return false;
+    }
+    // Dotted-numeric must be a full IPv4, not an incomplete address like "1.2.3".
+    if v.split('.')
+        .all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_digit()))
+    {
+        return false;
+    }
+    !v.split('.').any(|label| {
+        label.is_empty()
+            || label.len() > 63
+            || label.starts_with('-')
+            || label.ends_with('-')
+            || !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    })
 }
 
 /// Validate only the log-retention ranges (shared by `PUT /api/logs/settings`).
@@ -471,5 +509,40 @@ mod tests {
         assert!(validate_log_settings(Some(0), None, None).is_err());
         assert!(validate_log_settings(None, Some(99999), None).is_err());
         assert!(validate_log_settings(None, None, Some(5)).is_err());
+    }
+
+    #[test]
+    fn preferred_ip_empty_and_valid_ok() {
+        let old = base();
+        for v in ["", "   ", "192.168.1.5", "::1", "[::1]", "proxy.lan"] {
+            let mut new = old.clone();
+            new.pac.preferred_ip = v.into();
+            assert!(
+                validate_config(&new, &old).is_ok(),
+                "expected ok for preferred_ip={v:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn preferred_ip_rejects_invalid() {
+        let old = base();
+        for v in ["http://x", "1.2.3.4:8080", "a b", "1.2.3", "-bad.host"] {
+            let mut new = old.clone();
+            new.pac.preferred_ip = v.into();
+            let err = validate_config(&new, &old).unwrap_err();
+            assert!(
+                err.iter().any(|i| i.field == "pac.preferred_ip"),
+                "expected FieldIssue for preferred_ip={v:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn preferred_ip_is_hot_not_restart() {
+        let old = base();
+        let mut new = old.clone();
+        new.pac.preferred_ip = "10.0.0.5".into();
+        assert!(restart_fields_diff(&old, &new).is_empty());
     }
 }

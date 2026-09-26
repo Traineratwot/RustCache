@@ -133,6 +133,13 @@ async fn resolve_lookup(
             cached_outcome(engine, ctx, entry, Outcome::Hit)
         }
         Lookup::Revalidate { entry } => {
+            if engine.optimistic() {
+                // Serve the stale body now; refresh the cache in the background
+                // so the client is not blocked on origin latency.
+                spawn_background_revalidate(engine, ctx, tls, entry.clone());
+                engine.metrics().add_hit(entry.body.len() as u64);
+                return cached_outcome(engine, ctx, entry, Outcome::HitStale);
+            }
             match engine
                 .fetch_and_store(&ctx.method, &ctx.url, &ctx.headers, None, tls, Some(&entry))
                 .await
@@ -186,6 +193,33 @@ fn cached_outcome(
         outcome,
         resp_bytes: entry.body.len() as u64,
     }
+}
+
+/// Origin fetch + cache update after the client already has a stale body.
+/// Uses GET so the refreshed entry is actually stored (HEAD never populates).
+fn spawn_background_revalidate(
+    engine: &SharedEngine,
+    ctx: &RequestContext,
+    tls: Option<Arc<tokio_rustls::TlsConnector>>,
+    entry: CachedEntry,
+) {
+    let engine2 = engine.clone();
+    let url = ctx.url.clone();
+    let headers = ctx.headers.clone();
+    engine.spawn_bg(async move {
+        match engine2
+            .fetch_and_store("GET", &url, &headers, None, tls, Some(&entry))
+            .await
+        {
+            Ok(new_entry) => {
+                let outcome = revalidate_outcome(&entry, &new_entry);
+                tracing::debug!(%url, %outcome, "background revalidation done");
+            }
+            Err(e) => {
+                tracing::debug!(%url, error = %e, "background revalidation failed");
+            }
+        }
+    });
 }
 
 /// Origin / pipeline failure → 502 with `X-RustCache-Status: ERROR`.

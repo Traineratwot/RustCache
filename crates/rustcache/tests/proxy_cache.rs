@@ -43,12 +43,54 @@ async fn miss_then_hit_identical_body() {
 }
 
 #[tokio::test]
+async fn optimistic_serves_stale_then_updates_in_background() {
+    install_crypto();
+    let origin_state = OriginState::new("v1", "max-age=0");
+    *origin_state.etag.write().unwrap() = Some("\"e1\"".into());
+    let origin = spawn_origin(origin_state.clone()).await;
+    let (engine, dir) = spawn_engine(ExclusionSet::default()).await;
+    engine.set_optimistic(true);
+    let proxy = spawn_http_proxy(engine.clone()).await;
+
+    let url = format!("http://127.0.0.1:{}/opt", origin.port());
+    let (s1, b1) = proxy_get(proxy, &url).await.unwrap();
+    assert_eq!(s1, 200);
+    assert_eq!(b1, b"v1");
+
+    // Stale entry must be served immediately without waiting for origin.
+    let t0 = Instant::now();
+    let (s2, b2) = proxy_get(proxy, &url).await.unwrap();
+    let d2 = t0.elapsed();
+    assert_eq!(s2, 200);
+    assert_eq!(b2, b"v1");
+    assert!(
+        d2 < Duration::from_millis(150),
+        "stale serve must not wait for origin: {d2:?}"
+    );
+
+    engine.flush_bg().await;
+    assert!(
+        origin_state.hits() >= 2,
+        "background revalidation must hit origin"
+    );
+    let reqs = origin_state.requests.read().unwrap().clone();
+    assert_eq!(
+        reqs.last().and_then(|r| r.2.as_deref()),
+        Some("\"e1\""),
+        "background revalidate sends If-None-Match"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
 async fn max_age_expiry_revalidate_304_hit_revalidated() {
     install_crypto();
     let origin_state = OriginState::new("v1", "max-age=0");
     *origin_state.etag.write().unwrap() = Some("\"e1\"".into());
     let origin = spawn_origin(origin_state.clone()).await;
     let (engine, dir) = spawn_engine(ExclusionSet::default()).await;
+    engine.set_optimistic(false);
     let proxy = spawn_http_proxy(engine.clone()).await;
 
     let url = format!("http://127.0.0.1:{}/reval", origin.port());
@@ -205,6 +247,7 @@ async fn purge_all_and_by_key() {
     let url = format!("http://127.0.0.1:{}/p", origin.port());
     let (s1, _) = proxy_get(proxy, &url).await.unwrap();
     assert_eq!(s1, 200);
+    engine.flush_bg().await;
     let key = cache_key(&url);
     assert!(
         engine
@@ -270,6 +313,7 @@ async fn disk_fallback_hit_after_mem_invalidated() {
 
     let url = format!("http://127.0.0.1:{}/disk", origin.port());
     let _ = proxy_get(proxy, &url).await.unwrap();
+    engine.flush_bg().await;
     engine.mem().invalidate_all().await;
     let _ = proxy_get(proxy, &url).await.unwrap();
     assert_eq!(origin_state.hits(), 1, "disk entry serves after mem miss");

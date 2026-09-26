@@ -5,8 +5,9 @@
 //! (Law of Demeter): lookups, fetch-and-store, purge, and recording all go
 //! through this facade.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::future::Future;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rustcache_core::cache::coalesce::Coalesce;
 use rustcache_core::cache::disk::DiskCache;
@@ -28,7 +29,7 @@ pub type SharedEngine = Arc<CacheEngine>;
 /// Subsystems (disk, mem, metrics, logs, exclusions, fetcher) are private.
 /// Callers use the methods below so ownership and locking stay in one place.
 pub struct CacheEngine {
-    disk: DiskCache,
+    disk: Arc<DiskCache>,
     mem: MemCache,
     metrics: Arc<Metrics>,
     logs: Arc<LogStore>,
@@ -38,7 +39,11 @@ pub struct CacheEngine {
     max_object_bytes: AtomicU64,
     /// Live-tunable: disk cache size cap (hot-reloaded from config).
     max_bytes: AtomicU64,
+    /// Live-tunable: serve stale + background revalidate (hot-reloaded).
+    optimistic: AtomicBool,
     coalesce: Coalesce<OriginResponse>,
+    /// Background disk/revalidate tasks (for `flush_bg` in tests and purge).
+    bg: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 /// Result of consulting the caches before deciding to fetch.
@@ -58,7 +63,7 @@ impl CacheEngine {
         max_bytes: u64,
     ) -> Self {
         Self {
-            disk,
+            disk: Arc::new(disk),
             mem,
             metrics: Metrics::shared(),
             logs,
@@ -66,7 +71,9 @@ impl CacheEngine {
             fetcher: OriginFetcher::default(),
             max_object_bytes: AtomicU64::new(max_object_bytes),
             max_bytes: AtomicU64::new(max_bytes),
+            optimistic: AtomicBool::new(true),
             coalesce: Coalesce::new(),
+            bg: Mutex::new(Vec::new()),
         }
     }
 
@@ -85,6 +92,16 @@ impl CacheEngine {
         self.max_object_bytes
             .store(max_object_bytes, Ordering::Relaxed);
         self.max_bytes.store(max_bytes, Ordering::Relaxed);
+    }
+
+    /// Serve stale entries while revalidating in the background.
+    pub fn optimistic(&self) -> bool {
+        self.optimistic.load(Ordering::Relaxed)
+    }
+
+    /// Hot-apply optimistic caching (config reload / API update).
+    pub fn set_optimistic(&self, on: bool) {
+        self.optimistic.store(on, Ordering::Relaxed);
     }
 
     /// True when `url` matches an exclusion rule (domain or CIDR).
@@ -114,9 +131,7 @@ impl CacheEngine {
         let key = cache_key(url);
         if let Some(e) = self.mem.get(key.as_str()).await {
             if e.meta.is_fresh(now_ms()) {
-                if let Err(e) = self.disk.touch(key.as_str()).await {
-                    tracing::warn!(key = %key, error = %e, "disk touch failed");
-                }
+                self.touch_bg(key.as_str().to_string());
                 return Lookup::Hit(e);
             }
             return Lookup::Revalidate { entry: e };
@@ -139,15 +154,69 @@ impl CacheEngine {
                             None,
                         )
                         .await;
-                    if let Err(e) = self.disk.touch(key.as_str()).await {
-                        tracing::warn!(key = %key, error = %e, "disk touch failed");
-                    }
+                    self.touch_bg(key.as_str().to_string());
                     return Lookup::Hit(entry);
                 }
                 return Lookup::Revalidate { entry };
             }
         }
         Lookup::Miss
+    }
+
+    /// Spawn work that must not block the client response. Tracked for flush.
+    pub fn spawn_bg<F>(&self, fut: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let handle = tokio::spawn(fut);
+        if let Ok(mut g) = self.bg.lock() {
+            g.retain(|h| !h.is_finished());
+            g.push(handle);
+        }
+    }
+
+    /// Await all tracked background disk/revalidate tasks.
+    pub async fn flush_bg(&self) {
+        loop {
+            let handles: Vec<_> = {
+                let mut g = match self.bg.lock() {
+                    Ok(g) => g,
+                    Err(e) => e.into_inner(),
+                };
+                if g.is_empty() {
+                    break;
+                }
+                g.drain(..).collect()
+            };
+            for h in handles {
+                let _ = h.await;
+            }
+        }
+    }
+
+    /// LRU touch must not delay the client response.
+    fn touch_bg(&self, key: String) {
+        let disk = self.disk.clone();
+        self.spawn_bg(async move {
+            if let Err(e) = disk.touch(&key).await {
+                tracing::warn!(key = %key, error = %e, "disk touch failed");
+            }
+        });
+    }
+
+    /// Disk write + LRU eviction must not delay the client response.
+    /// Mem insert stays on the hot path so concurrent lookups see the entry.
+    fn persist_bg(&self, meta: rustcache_core::cache::meta::CacheMeta, body: Arc<Vec<u8>>) {
+        let disk = self.disk.clone();
+        let max_bytes = self.max_bytes();
+        self.spawn_bg(async move {
+            if let Err(e) = disk.store(meta, &body).await {
+                tracing::warn!(error = %e, "disk store failed");
+            }
+            if let Err(e) = evict_lru(&disk, max_bytes).await {
+                tracing::warn!(error = %e, "lru eviction failed");
+            }
+        });
     }
 
     /// Fetch from origin (or revalidate) and store. Coalesced per key.
@@ -251,14 +320,10 @@ impl CacheEngine {
                     meta: meta.clone(),
                     body: entry.body.clone(),
                 },
-                None,
+                Some(std::time::Duration::from_secs(600)),
             )
             .await;
-        if let Err(e) = self.disk.store(meta, &entry.body).await {
-            // Persist failure must not fail the client response — the
-            // fetched body is still served from this entry.
-            tracing::warn!(key, error = %e, "disk store failed after revalidation");
-        }
+        self.persist_bg(meta, entry.body.clone());
         Ok(entry)
     }
 
@@ -275,6 +340,12 @@ impl CacheEngine {
                 // do not persist
             }
             _ => {
+                // Keep zero-TTL entries in mem so Revalidate/optimistic can
+                // find them without waiting for the disk write.
+                let mem_ttl = match policy.ttl() {
+                    Some(d) if !d.is_zero() => Some(d),
+                    _ => Some(std::time::Duration::from_secs(600)),
+                };
                 self.mem
                     .insert(
                         key,
@@ -282,21 +353,17 @@ impl CacheEngine {
                             meta: entry.meta.clone(),
                             body: entry.body.clone(),
                         },
-                        policy.ttl(),
+                        mem_ttl,
                     )
                     .await;
-                if let Err(e) = self.disk.store(entry.meta.clone(), &entry.body).await {
-                    tracing::warn!(key, error = %e, "disk store failed");
-                }
-                if let Err(e) = evict_lru(&self.disk, self.max_bytes()).await {
-                    tracing::warn!(error = %e, "lru eviction failed");
-                }
+                self.persist_bg(entry.meta, entry.body);
             }
         }
     }
 
     /// Drop every cache entry (mem + disk).
     pub async fn purge_all(&self) -> anyhow::Result<u64> {
+        self.flush_bg().await;
         self.mem.invalidate_all().await;
         let n = self.disk.purge_all().await?;
         Ok(n)
@@ -304,6 +371,7 @@ impl CacheEngine {
 
     /// Drop a single URL from mem + disk. Returns true if a disk entry was removed.
     pub async fn purge_key(&self, url: &str) -> anyhow::Result<bool> {
+        self.flush_bg().await;
         let key = cache_key(url);
         self.mem.invalidate(key.as_str()).await;
         Ok(self.disk.remove(key.as_str()).await?)
@@ -350,7 +418,7 @@ impl CacheEngine {
 
     /// Direct disk access for tests and cache-seeding helpers.
     pub fn disk(&self) -> &DiskCache {
-        &self.disk
+        self.disk.as_ref()
     }
 
     /// Direct mem access for tests (invalidate / promote).
