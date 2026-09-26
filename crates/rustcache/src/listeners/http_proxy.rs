@@ -12,10 +12,10 @@ use tokio::net::{TcpListener, TcpStream};
 use rustcache_core::http::fetch::parse_url;
 use rustcache_core::stats::{Outcome, ReqRecord};
 
-use crate::engine::{upstream_tls_connector, SharedEngine};
-use crate::listeners::serve::{resolve_cached, RequestContext};
+use crate::engine::{SharedEngine, upstream_tls_connector};
+use crate::listeners::serve::{RequestContext, resolve_cached};
 use crate::listeners::wire::{
-    host_of, read_http_request as read_request, write_http_response, HttpRequest,
+    HttpRequest, host_of, read_http_request as read_request, write_http_response,
 };
 
 // Re-export for integration tests and sibling listeners.

@@ -6,7 +6,7 @@ use rustcache_core::certs::leaf::LeafIssuer;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
-use crate::api::{pac_router, ApiState};
+use crate::api::{ApiState, pac_router};
 use crate::config::Config;
 use crate::engine::SharedEngine;
 use crate::listeners;

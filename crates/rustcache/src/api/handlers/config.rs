@@ -1,14 +1,14 @@
 //! `/api/config*` — get/replace config, file reload, process restart.
 
-use axum::extract::{Query, State};
 use axum::Json;
+use axum::extract::{Query, State};
 use serde::Deserialize;
 
 use crate::api::error::ApiError;
 use crate::api::state::ApiState;
+use crate::config::Config;
 use crate::config::persist::write_config_toml;
 use crate::config::validate::{restart_fields_diff, validate_config};
-use crate::config::Config;
 
 /// The whole effective config (paths, ports, limits — no secrets).
 pub async fn get_config(State(st): State<ApiState>) -> Json<serde_json::Value> {

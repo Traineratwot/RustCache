@@ -1,15 +1,15 @@
 //! REST API state.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use rustcache_core::certs::ca::CaMaterial;
 use rustcache_core::excl::{ExclusionSet, Matcher};
 
-use crate::config::watch::LiveConfig;
 use crate::config::Config;
+use crate::config::watch::LiveConfig;
 use crate::engine::SharedEngine;
 
 /// Which proxy listeners actually bound. Health uses this — a TCP probe on a

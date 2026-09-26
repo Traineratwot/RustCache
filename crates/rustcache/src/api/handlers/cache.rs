@@ -1,7 +1,7 @@
 //! `/api/cache` — on-disk cache size and purge.
 
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use serde::Serialize;
 
 use crate::api::error::ApiError;

@@ -51,7 +51,7 @@ pub(super) fn init_schema(conn: &Connection) -> anyhow::Result<()> {
 /// Optional peek used by tests to verify schema objects.
 #[cfg(test)]
 pub(super) fn table_exists(conn: &Connection, name: &str) -> anyhow::Result<bool> {
-    use rusqlite::{params, OptionalExtension};
+    use rusqlite::{OptionalExtension, params};
     let found: Option<i64> = conn
         .query_row(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
@@ -65,7 +65,7 @@ pub(super) fn table_exists(conn: &Connection, name: &str) -> anyhow::Result<bool
 /// Optional peek used by tests to verify schema objects.
 #[cfg(test)]
 pub(super) fn index_exists(conn: &Connection, name: &str) -> anyhow::Result<bool> {
-    use rusqlite::{params, OptionalExtension};
+    use rusqlite::{OptionalExtension, params};
     let found: Option<i64> = conn
         .query_row(
             "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1",

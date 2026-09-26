@@ -31,7 +31,7 @@ mod tests {
     use super::*;
     use crate::cache::disk::DiskCache;
     use crate::cache::key::cache_key;
-    use crate::cache::meta::{now_ms, CacheMeta};
+    use crate::cache::meta::{CacheMeta, now_ms};
 
     #[tokio::test]
     async fn evicts_oldest_when_over_cap() {

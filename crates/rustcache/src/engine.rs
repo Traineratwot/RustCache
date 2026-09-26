@@ -228,7 +228,7 @@ impl CacheEngine {
             None => {
                 return Err(anyhow::anyhow!(
                     "origin returned 304 without a revalidation base"
-                ))
+                ));
             }
         };
         let _ = resp;

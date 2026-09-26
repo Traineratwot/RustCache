@@ -7,8 +7,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use moka::future::Cache as Moka;
 use moka::Expiry;
+use moka::future::Cache as Moka;
 
 use super::meta::CacheMeta;
 use crate::Result;

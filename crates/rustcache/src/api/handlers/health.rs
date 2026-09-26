@@ -1,8 +1,8 @@
 //! `/api/health` — liveness plus per-listener bind status.
 
-use axum::extract::State;
 use axum::Json;
-use serde_json::{json, Value};
+use axum::extract::State;
+use serde_json::{Value, json};
 
 use super::port_of_bind;
 use crate::api::state::ApiState;

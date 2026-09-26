@@ -7,9 +7,9 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use common::*;
-use rustcache::api::{router, ApiState};
-use rustcache::config::watch::LiveConfig;
+use rustcache::api::{ApiState, router};
 use rustcache::config::Config;
+use rustcache::config::watch::LiveConfig;
 use rustcache_core::certs::ca::generate_ca;
 use rustcache_core::excl::ExclusionSet;
 use rustcache_core::stats::{Outcome, ReqRecord};
@@ -385,11 +385,13 @@ async fn config_put_full_roundtrip() {
     assert_eq!(v["config"]["logs"]["max_rows"], 500);
     assert_eq!(v["config"]["pac"]["mode"], "socks");
     assert_eq!(v["restart_required"], true);
-    assert!(v["restart_fields"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|x| x == "http.port"));
+    assert!(
+        v["restart_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x == "http.port")
+    );
 
     // persisted to config.toml
     let text = std::fs::read_to_string(dir.join("config.toml")).unwrap();
@@ -440,11 +442,13 @@ async fn config_put_rejects_invalid() {
     let (status, v) = json_send(state.clone(), "PUT", "/api/config", Some(body)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(v["ok"], false);
-    assert!(v["errors"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|e| e["field"] == "http.port"));
+    assert!(
+        v["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["field"] == "http.port")
+    );
 
     let mut body = full_config_json(&data_dir);
     body["cache"]["max_object_bytes"] = serde_json::json!(u64::MAX);

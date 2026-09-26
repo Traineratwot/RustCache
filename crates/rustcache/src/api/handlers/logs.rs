@@ -1,7 +1,7 @@
 //! `/api/logs/*` — request-log stats and retention settings.
 
-use axum::extract::{Query, State};
 use axum::Json;
+use axum::extract::{Query, State};
 use serde::{Deserialize, Serialize};
 
 use crate::api::error::ApiError;

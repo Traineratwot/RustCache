@@ -3,7 +3,7 @@
 //! Serves the Vite production build from `web/dist` as static files with
 //! an `index.html` fallback so client-side routes work on refresh.
 
-use axum::http::{header, StatusCode, Uri};
+use axum::http::{StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use rust_embed::Embed;
 

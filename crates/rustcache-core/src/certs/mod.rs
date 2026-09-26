@@ -3,5 +3,5 @@
 pub mod ca;
 pub mod leaf;
 
-pub use ca::{generate_ca, load_ca, CaMaterial};
+pub use ca::{CaMaterial, generate_ca, load_ca};
 pub use leaf::LeafIssuer;

@@ -12,9 +12,9 @@ use rustcache_core::certs::ca::{export_pem, generate_ca, load_ca};
 use rustcache_core::certs::leaf::LeafIssuer;
 use rustcache_core::excl::ExclusionSet;
 
-use rustcache::api::{router, ApiState};
-use rustcache::config::watch::LiveConfig;
+use rustcache::api::{ApiState, router};
 use rustcache::config::Config;
+use rustcache::config::watch::LiveConfig;
 use rustcache::engine::CacheEngine;
 
 #[derive(Parser, Debug)]

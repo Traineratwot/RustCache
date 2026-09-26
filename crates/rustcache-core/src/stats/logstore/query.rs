@@ -1,6 +1,6 @@
 //! SQL filter building and request-log row operations: page query, clear, trim, cleanup.
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use super::dto::{LogPage, LogQuery, ReqRecord};
 use super::outcome::Outcome;

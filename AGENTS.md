@@ -5,7 +5,7 @@ Plans: `docs/plans/`. Delivery reports: `docs/compose/spec/`.
 
 ## Stack
 
-- **Rust** workspace (edition 2021): tokio + hyper/hyper-util + axum (API) + rustls/tokio-rustls + rcgen (CA/leaf) + moka (mem) + rusqlite (request log) + blake3 (cache keys) + notify (config watch)
+- **Rust** workspace (edition 2024, MSRV 1.87): tokio + hyper/hyper-util + axum (API) + rustls/tokio-rustls + rcgen (CA/leaf) + moka (mem) + rusqlite (request log) + blake3 (cache keys) + notify (config watch)
 - **Web UI** (`web/`): React 19 + TypeScript + Vite + react-router-dom + PrimeReact/PrimeFlex/primeicons + Biome (`lint`/`fmt`)
 - TLS upstream trust: `webpki-roots` only (no system roots)
 

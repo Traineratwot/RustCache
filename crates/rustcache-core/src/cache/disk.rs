@@ -6,7 +6,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use super::key::{fanout, is_hex_key};
-use super::meta::{now_ms, CacheMeta};
+use super::meta::{CacheMeta, now_ms};
 use crate::{Error, Result};
 
 pub struct DiskCache {

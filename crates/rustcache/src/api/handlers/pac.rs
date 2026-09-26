@@ -1,13 +1,13 @@
 //! `/api/pac`, `/proxy.pac`, `/wpad.dat` — PAC discovery and body serving.
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 
 use super::netinfo::{best_lan_ipv4, lan_ipv4s};
 use super::port_of_bind;
-use crate::api::pac::{generate_pac, PacParams};
+use crate::api::pac::{PacParams, generate_pac};
 use crate::api::state::ApiState;
 use crate::config::schema::PacMode;
 

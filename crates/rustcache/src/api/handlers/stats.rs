@@ -1,8 +1,8 @@
 //! `/api/stats` — cache/proxy metrics snapshot.
 
-use axum::extract::State;
 use axum::Json;
-use serde_json::{json, Value};
+use axum::extract::State;
+use serde_json::{Value, json};
 
 use crate::api::state::ApiState;
 

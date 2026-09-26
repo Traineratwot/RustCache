@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use common::*;
 use rustcache_core::cache::key::cache_key;
-use rustcache_core::cache::meta::{now_ms, CacheMeta};
+use rustcache_core::cache::meta::{CacheMeta, now_ms};
 use rustcache_core::certs::ca::generate_ca;
 use rustcache_core::certs::leaf::LeafIssuer;
 use rustcache_core::excl::ExclusionSet;

@@ -12,9 +12,9 @@ use tokio::net::{TcpListener, TcpStream};
 use rustcache_core::certs::leaf::LeafIssuer;
 use rustcache_core::http::fetch::parse_url;
 
-use crate::engine::{upstream_tls_connector, SharedEngine};
-use crate::listeners::serve::{resolve_cached, RequestContext};
-use crate::listeners::wire::{host_of, read_http_request, write_http_response, HttpRequest};
+use crate::engine::{SharedEngine, upstream_tls_connector};
+use crate::listeners::serve::{RequestContext, resolve_cached};
+use crate::listeners::wire::{HttpRequest, host_of, read_http_request, write_http_response};
 
 pub struct MitmState {
     pub engine: SharedEngine,

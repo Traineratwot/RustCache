@@ -96,12 +96,14 @@ async fn no_store_never_cached() {
     assert_eq!(b2, b"secret");
     assert_eq!(origin_state.hits(), 2, "no-store must always hit origin");
     let key = cache_key(&url);
-    assert!(engine
-        .disk()
-        .load_meta(key.as_str())
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        engine
+            .disk()
+            .load_meta(key.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -204,21 +206,25 @@ async fn purge_all_and_by_key() {
     let (s1, _) = proxy_get(proxy, &url).await.unwrap();
     assert_eq!(s1, 200);
     let key = cache_key(&url);
-    assert!(engine
-        .disk()
-        .load_meta(key.as_str())
-        .await
-        .unwrap()
-        .is_some());
+    assert!(
+        engine
+            .disk()
+            .load_meta(key.as_str())
+            .await
+            .unwrap()
+            .is_some()
+    );
 
     // by key
     assert!(engine.purge_key(&url).await.unwrap());
-    assert!(engine
-        .disk()
-        .load_meta(key.as_str())
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        engine
+            .disk()
+            .load_meta(key.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
     let _ = proxy_get(proxy, &url).await.unwrap();
     assert_eq!(origin_state.hits(), 2);
 

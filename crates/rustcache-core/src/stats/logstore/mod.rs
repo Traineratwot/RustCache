@@ -12,7 +12,7 @@ mod schema;
 mod writer;
 
 use std::path::Path;
-use std::sync::mpsc::{channel, sync_channel, SyncSender};
+use std::sync::mpsc::{SyncSender, channel, sync_channel};
 
 use rusqlite::Connection;
 
@@ -22,7 +22,7 @@ pub use dto::{
 pub use outcome::Outcome;
 
 use schema::{init_schema, set_db_mode};
-use writer::{handle_cmd, recv_result, LogCmd, WriterState};
+use writer::{LogCmd, WriterState, handle_cmd, recv_result};
 
 const CHANNEL_CAP: usize = 8192;
 const DEFAULT_MAX_ROWS: u64 = 10_000;

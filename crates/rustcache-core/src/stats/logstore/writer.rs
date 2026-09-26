@@ -1,6 +1,6 @@
 //! Writer-thread machinery: command channel messages, single-threaded SQLite writes, reply helpers.
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use super::analytics::stats;
 use super::dto::{LogPage, LogQuery, LogStats, LogStatsQuery, ReqRecord};

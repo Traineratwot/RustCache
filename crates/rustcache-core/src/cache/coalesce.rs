@@ -85,8 +85,8 @@ impl<T: Clone> Coalesce<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[tokio::test]
     async fn parallel_calls_share_one_fetch() {

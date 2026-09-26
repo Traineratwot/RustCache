@@ -1,7 +1,7 @@
 //! `/api/exclusions` — domain/CIDR exclusion list management.
 
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use serde::Deserialize;
 
 use crate::api::state::ApiState;

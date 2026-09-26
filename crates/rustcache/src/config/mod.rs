@@ -6,4 +6,4 @@ pub mod validate;
 pub mod watch;
 
 pub use schema::Config;
-pub use validate::{restart_fields_diff, validate_config, FieldIssue};
+pub use validate::{FieldIssue, restart_fields_diff, validate_config};

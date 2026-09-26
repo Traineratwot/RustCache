@@ -1,7 +1,7 @@
 //! Axum REST API route wiring (handlers live in `super::handlers`).
 
-use axum::routing::{get, post};
 use axum::Router;
+use axum::routing::{get, post};
 
 use super::handlers;
 use super::state::ApiState;
