@@ -4,9 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "predev": "node scripts/copy-themes.mjs",
+    "predev": "bun scripts/copy-themes.mjs",
     "dev": "vite",
-    "prebuild": "node scripts/copy-themes.mjs",
+    "prebuild": "bun scripts/copy-themes.mjs",
     "build": "tsc -b && vite build",
     "lint": "biome check src",
     "fmt": "biome format --write src",

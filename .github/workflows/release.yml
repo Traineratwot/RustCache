@@ -16,7 +16,8 @@ permissions:
 
 jobs:
   version:
-    runs-on: ubuntu-latest
+    # LXC 192.168.10.170
+    runs-on: [self-hosted, linux, x64]
     outputs:
       version: ${{ steps.meta.outputs.version }}
       tag: ${{ steps.meta.outputs.tag }}
@@ -53,11 +54,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # self-hosted LXC (192.168.10.170) — native amd64 build
+          # LXC 192.168.10.170 — native amd64
           - runner: [self-hosted, linux, x64, rustcache]
             deb_arch: amd64
             platform: linux/amd64
-          # ARM64 self-hosted on OpenWrt router (Docker socket mounted, 3 CPU / 2GB cap)
+          # OpenWrt router — arm64, Docker 3 CPU / 2GB
           - runner: [self-hosted, linux, arm64, router]
             deb_arch: arm64
             platform: linux/arm64
@@ -79,17 +80,13 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
 
       - name: Build web UI
         run: |
-          npm --prefix web install
-          npm --prefix web run build
+          bun install --cwd web --frozen-lockfile
+          bun run --cwd web build
 
       - name: Build binary (embed-ui)
         run: cargo build --release --features embed-ui
@@ -169,7 +166,8 @@ jobs:
   docker-manifest:
     needs: [version, build]
     if: needs.version.outputs.should_release == 'true'
-    runs-on: ubuntu-latest
+    # LXC 192.168.10.170 (has docker)
+    runs-on: [self-hosted, linux, x64, rustcache]
     permissions:
       contents: read
       packages: write
@@ -222,7 +220,8 @@ jobs:
   release:
     needs: [version, build]
     if: needs.version.outputs.should_release == 'true'
-    runs-on: ubuntu-latest
+    # LXC 192.168.10.170
+    runs-on: [self-hosted, linux, x64]
     permissions:
       contents: write
     steps:
@@ -253,7 +252,8 @@ jobs:
   apt-repo:
     needs: [version, build]
     if: needs.version.outputs.should_release == 'true'
-    runs-on: ubuntu-latest
+    # LXC 192.168.10.170
+    runs-on: [self-hosted, linux, x64]
     permissions:
       contents: write
     concurrency:
@@ -284,8 +284,6 @@ jobs:
 
       - name: Regenerate apt index and package list
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq dpkg-dev
           cd site
           dpkg-scanpackages --multiversion pool /dev/null > Packages
           gzip -9c Packages > Packages.gz
