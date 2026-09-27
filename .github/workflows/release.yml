@@ -53,13 +53,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
+          # self-hosted LXC (192.168.10.170) — native amd64 build
+          - runner: [self-hosted, linux, x64, rustcache]
             deb_arch: amd64
             platform: linux/amd64
-          - os: ubuntu-22.04-arm
+          # ARM64 self-hosted on OpenWrt router (Docker socket mounted, 3 CPU / 2GB cap)
+          - runner: [self-hosted, linux, arm64, router]
             deb_arch: arm64
             platform: linux/arm64
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
