@@ -1405,7 +1405,7 @@ dependencies = [
 
 [[package]]
 name = "rustcache"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "axum",
@@ -1438,7 +1438,7 @@ dependencies = [
 
 [[package]]
 name = "rustcache-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "blake3",
