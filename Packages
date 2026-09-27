@@ -124,3 +124,45 @@ Description: Caching HTTP/HTTPS proxy with MITM and disk cache
  System install runs as user `rustcache` with data in /var/lib/rustcache
  and config in /etc/rustcache/config.toml.
 
+Package: rustcache
+Version: 0.1.4
+Architecture: amd64
+Maintainer: Traineratwot <Traineratwot@users.noreply.github.com>
+Installed-Size: 14768
+Depends: libc6, libgcc-s1
+Filename: pool/rustcache_0.1.4_amd64.deb
+Size: 4476812
+MD5sum: 10f647b5d92347ada715c7902bfa6ca1
+SHA1: 91eccd5d32451dd16572c3e6a717d35b1db92c2f
+SHA256: d2c9d0c38febdbb5746a7972add44940a221f058f39c71ee82dcc079b4afdbe3
+Section: net
+Priority: optional
+Homepage: https://github.com/Traineratwot/RustCache
+Description: Caching HTTP/HTTPS proxy with MITM and disk cache
+ RustCache is a caching HTTP/HTTPS proxy with TLS MITM (local root CA),
+ on-disk + in-memory cache, SOCKS5 tunnel and a local REST API/web UI.
+ .
+ System install runs as user `rustcache` with data in /var/lib/rustcache
+ and config in /etc/rustcache/config.toml.
+
+Package: rustcache
+Version: 0.1.4
+Architecture: arm64
+Maintainer: Traineratwot <Traineratwot@users.noreply.github.com>
+Installed-Size: 14332
+Depends: libc6, libgcc-s1
+Filename: pool/rustcache_0.1.4_arm64.deb
+Size: 4377248
+MD5sum: b4a4c7429e171579b2bb86e45e59b7c1
+SHA1: 1ad636a136ac60767ca15cfb46a4df5fccca09e8
+SHA256: ae5a771cad5d28951775afa1c2bc039e56875447e7b18c7b93f9e27d73de7f45
+Section: net
+Priority: optional
+Homepage: https://github.com/Traineratwot/RustCache
+Description: Caching HTTP/HTTPS proxy with MITM and disk cache
+ RustCache is a caching HTTP/HTTPS proxy with TLS MITM (local root CA),
+ on-disk + in-memory cache, SOCKS5 tunnel and a local REST API/web UI.
+ .
+ System install runs as user `rustcache` with data in /var/lib/rustcache
+ and config in /etc/rustcache/config.toml.
+
