@@ -4,15 +4,31 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
   workflow_call:
+    inputs:
+      # Release `gate` calls this workflow — quality must always run there.
+      # Standalone push CI skips when Cargo.toml changed (Release already covers it).
+      from_release:
+        description: Set true when invoked as Release gate
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 jobs:
   quality:
-    # LXC 192.168.10.170
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
+    # Skip only the standalone push run if the commit touches Cargo.toml (version bump):
+    # Release workflow already runs this as `gate`.
+    if: >-
+      inputs.from_release == true ||
+      github.event_name != 'push' ||
+      (
+        !contains(github.event.head_commit.modified, 'Cargo.toml') &&
+        !contains(github.event.head_commit.added, 'Cargo.toml')
+      )
     steps:
       - uses: actions/checkout@v4
 

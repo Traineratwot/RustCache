@@ -1,35 +1,24 @@
 # syntax=docker/dockerfile:1
 
-# ---- web UI (must exist before cargo build with embed-ui) ----
-FROM oven/bun:1-alpine AS web
-WORKDIR /src/web
-COPY web/package.json web/bun.lock ./
-RUN bun install --frozen-lockfile || bun install
-COPY web/ ./
-RUN bun run build
+# Packaging-only image: binary is built in CI (or locally) and copied in.
+# Avoids rebuilding web + rust inside Docker (that was ~2/3 of release time).
+#
+# Local:  cargo build --release --features embed-ui && docker build -t rustcache .
+# CI:     same binary path via build context file `rustcache-bin`
 
-# ---- rust binary (musl, to match alpine runtime) ----
-FROM rust:1-alpine AS build
-RUN apk add --no-cache musl-dev
-WORKDIR /src
-COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
-# rust-embed looks for ../../web/dist relative to crates/rustcache
-COPY --from=web /src/web/dist ./web/dist
-RUN cargo build --release --features embed-ui -p rustcache \
-    && strip target/release/rustcache
+FROM debian:bookworm-slim
 
-# ---- runtime ----
-FROM alpine:3
-
-RUN apk add --no-cache ca-certificates curl \
-    && adduser -D -H -h /var/lib/rustcache -s /sbin/nologin rustcache \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -r -M -d /var/lib/rustcache -s /usr/sbin/nologin rustcache \
     && mkdir -p /var/lib/rustcache /etc/rustcache \
     && chown rustcache:rustcache /var/lib/rustcache
 
-COPY --from=build /src/target/release/rustcache /usr/bin/rustcache
+COPY rustcache-bin /usr/bin/rustcache
 COPY packaging/etc/config.system.toml /etc/rustcache/config.toml
-RUN chown rustcache:rustcache /etc/rustcache/config.toml
+RUN chmod 755 /usr/bin/rustcache \
+    && chown rustcache:rustcache /etc/rustcache/config.toml
 
 USER rustcache
 WORKDIR /var/lib/rustcache

@@ -12,3 +12,4 @@ config.toml
 /rustcache.pid
 /dist/
 *.deb
+/rustcache-bin

@@ -6,6 +6,15 @@ on:
     paths:
       - "Cargo.toml"
   workflow_dispatch:
+    inputs:
+      force:
+        description: Build and publish even if tag for current version already exists
+        type: boolean
+        default: true
+      build_only:
+        description: Run quality+build only (skip Release / apt-repo / docker publish)
+        type: boolean
+        default: false
 
 concurrency:
   group: release-${{ github.ref }}
@@ -16,25 +25,44 @@ permissions:
 
 jobs:
   version:
-    # LXC 192.168.10.170
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.meta.outputs.version }}
       tag: ${{ steps.meta.outputs.tag }}
       should_release: ${{ steps.meta.outputs.should_release }}
+      build_only: ${{ steps.meta.outputs.build_only }}
+      force_release: ${{ steps.meta.outputs.force_release }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Extract version from Cargo.toml
         id: meta
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_FORCE: ${{ inputs.force }}
+          INPUT_BUILD_ONLY: ${{ inputs.build_only }}
         run: |
           VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])")
           TAG="v${VERSION}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$INPUT_BUILD_ONLY" = "true" ]; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "build_only=true" >> "$GITHUB_OUTPUT"
+            echo "Manual build-only run for ${TAG} (no publish)."
+            exit 0
+          fi
+
           if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-            echo "Tag ${TAG} already exists — skipping release."
+            if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$INPUT_FORCE" = "true" ]; then
+              echo "should_release=true" >> "$GITHUB_OUTPUT"
+              echo "force_release=true" >> "$GITHUB_OUTPUT"
+              echo "Tag ${TAG} exists — force manual release."
+            else
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              echo "Tag ${TAG} already exists — skipping release."
+            fi
           else
             echo "should_release=true" >> "$GITHUB_OUTPUT"
             echo "Will release ${TAG}."
@@ -54,15 +82,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # LXC 192.168.10.170 — native amd64
-          - runner: [self-hosted, linux, x64, rustcache]
+          - os: ubuntu-22.04
             deb_arch: amd64
             platform: linux/amd64
-          # OpenWrt router — arm64, Docker 3 CPU / 2GB
-          - runner: [self-hosted, linux, arm64, router]
+          - os: ubuntu-22.04-arm
             deb_arch: arm64
             platform: linux/arm64
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
       packages: write
@@ -117,6 +143,9 @@ jobs:
             dist/*.tar.gz
           if-no-files-found: error
 
+      - name: Prepare binary for Docker
+        run: cp target/release/rustcache rustcache-bin
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -137,6 +166,7 @@ jobs:
             type=raw,value=${{ needs.version.outputs.tag }}
             type=raw,value=latest
 
+      # Dockerfile is packaging-only: copies the binary built above (no second cargo/web build)
       - name: Build and push by digest
         id: docker_build
         uses: docker/build-push-action@v6
@@ -145,9 +175,7 @@ jobs:
           file: Dockerfile
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=docker-${{ matrix.deb_arch }}
-          cache-to: type=gha,mode=max,scope=docker-${{ matrix.deb_arch }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=${{ needs.version.outputs.build_only != 'true' }}
 
       - name: Export digest
         run: |
@@ -165,9 +193,8 @@ jobs:
 
   docker-manifest:
     needs: [version, build]
-    if: needs.version.outputs.should_release == 'true'
-    # LXC 192.168.10.170 (has docker)
-    runs-on: [self-hosted, linux, x64, rustcache]
+    if: needs.version.outputs.should_release == 'true' && needs.version.outputs.build_only != 'true'
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
@@ -219,9 +246,8 @@ jobs:
 
   release:
     needs: [version, build]
-    if: needs.version.outputs.should_release == 'true'
-    # LXC 192.168.10.170
-    runs-on: [self-hosted, linux, x64]
+    if: needs.version.outputs.should_release == 'true' && needs.version.outputs.build_only != 'true'
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
@@ -242,7 +268,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.version.outputs.tag }}
+          FORCE: ${{ needs.version.outputs.force_release }}
         run: |
+          if [ "$FORCE" = "true" ]; then
+            gh release delete "${TAG}" --yes || true
+            git push origin ":refs/tags/${TAG}" 2>/dev/null || true
+          fi
           gh release create "${TAG}" \
             --target "${GITHUB_SHA}" \
             --title "${TAG}" \
@@ -251,9 +282,8 @@ jobs:
 
   apt-repo:
     needs: [version, build]
-    if: needs.version.outputs.should_release == 'true'
-    # LXC 192.168.10.170
-    runs-on: [self-hosted, linux, x64]
+    if: needs.version.outputs.should_release == 'true' && needs.version.outputs.build_only != 'true'
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     concurrency:
@@ -284,6 +314,8 @@ jobs:
 
       - name: Regenerate apt index and package list
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dpkg-dev
           cd site
           dpkg-scanpackages --multiversion pool /dev/null > Packages
           gzip -9c Packages > Packages.gz
