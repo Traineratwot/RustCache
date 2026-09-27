@@ -221,8 +221,17 @@ async fn run(config_path: PathBuf, data_dir: Option<PathBuf>) -> anyhow::Result<
     let tasks = rustcache::startup::bring_up_listeners(&cfg, &state, &engine, &leaves).await;
 
     tracing::info!("RustCache started");
-    axum::serve(listener, api_router).await?;
+    axum::serve(listener, api_router)
+        .with_graceful_shutdown(async {
+            rustcache::startup::wait_for_shutdown_signal().await;
+            tracing::info!("shutdown signal received");
+        })
+        .await?;
 
     tasks.abort();
+    if let Err(e) = logs.flush().await {
+        tracing::warn!(error = %e, "request log flush failed");
+    }
+    tracing::info!("RustCache stopped");
     Ok(())
 }

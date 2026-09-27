@@ -45,17 +45,29 @@ Honest feature matrix against common alternatives. `Yes` / `Partial` / `No`.
 | Config from Web UI + hot reload | Yes | No | No | Partial | Partial |
 
 [^1]: nginx `proxy_cache` is a reverse-proxy cache; forward-proxy mode needs extra modules and is not the primary use case.
+
 [^2]: Squid `ssl_bump` can MITM HTTPS and cache decrypted bodies, but requires an OpenSSL build, certificate plumbing, and careful ACL setup.
+
 [^3]: mitmproxy intercepts and rewrites traffic for debugging/security work; it is not a production HTTP cache.
+
 [^4]: HTTP CONNECT passthrough in nginx needs third-party modules (e.g. `ngx_http_proxy_connect_module`).
+
 [^5]: mitmproxy can talk to SOCKS upstreams and has reverse/upstream modes; it is not a general-purpose SOCKS5 server.
+
 [^6]: Privoxy is primarily an HTTP filtering proxy; SOCKS is used on the parent-proxy chain, not as a first-class server mode.
+
 [^7]: Squid ships `cachemgr.cgi` and access logs; a full analytics SPA is external (Lightsquid, sarg, etc.).
+
 [^8]: mitmproxy has a web UI for inspecting flows, not for operating a shared cache.
+
 [^9]: File-based access logs are standard; live hit-rate dashboards are not built in (except RustCache and mitmproxy's flow UI).
+
 [^10]: RustCache exclusions are domain globs + CIDR bypass lists, not a general ACL language (no regex actions, time-based rules, or user groups).
+
 [^11]: Privoxy can chain to a parent proxy; there is no ICP/HTCP cache mesh.
+
 [^12]: Filtering/rewriting via scripts or actions, not the ICAP/eCAP protocol.
+
 [^13]: mitmproxy has a reverse-proxy mode for local development, not origin acceleration at scale.
 
 **Honest limitations of RustCache today**
@@ -162,6 +174,52 @@ docker run -d --name rustcache \
   -v "$PWD/config.toml:/etc/rustcache/config.toml:ro" \
   ghcr.io/traineratwot/rustcache:latest
 ```
+
+### Docker Compose
+
+The repository ships [`docker-compose.yaml`](docker-compose.yaml):
+
+```yaml
+services:
+  rustcache:
+    image: 'ghcr.io/traineratwot/rustcache:latest'
+    init: true
+    container_name: rustcache
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - './config.toml:/etc/rustcache/config.toml:ro'
+      - 'rustcache-data:/var/lib/rustcache'
+volumes:
+  rustcache-data:
+```
+
+```bash
+# create a config first (or copy config.example.toml)
+cp config.example.toml config.toml
+
+docker compose up -d
+docker compose logs -f rustcache
+```
+
+What each field does:
+
+| Field | Meaning |
+|-------|---------|
+| `image` | Multi-arch image (`amd64`/`arm64`) from GHCR; `:latest` tracks releases |
+| `init: true` | Adds a proper PID 1 (tini) so signals and zombie reaping work |
+| `container_name` | Fixed name `rustcache` — handy for `docker exec`, logs, and scripts |
+| `restart: unless-stopped` | Restarts on crash/host reboot; stays down if you `docker compose stop` |
+| `network_mode: host` | Container shares the host network stack — proxy/PAC ports are opened on the host directly, no NAT or `-p` mappings |
+| `./config.toml:...:ro` | Your local `config.toml` is mounted read-only at the system path (`/etc/rustcache/config.toml`). The file must exist next to the compose file |
+| `rustcache-data:/var/lib/rustcache` | Named volume for `data_dir` — cache, root CA (`ca.key` 0600) and `logs.db` survive container recreation |
+
+Notes:
+
+- **`network_mode: host` vs `-p` mapping.** Host networking is intentional: a forward proxy is contacted by other machines/tools on fixed ports, and `network_mode: host` also lets clients on the LAN reach it without extra publish rules. If you prefer bridge networking, drop `network_mode: host` and add `-p`/`ports:` as in the `docker run` example above.
+- **API bind.** `[api]` defaults to `127.0.0.1:8080`. With host networking that is the **host** loopback only — the Web UI is not exposed to the LAN unless you change `api.bind` in `config.toml` (or use the UI Settings page).
+- **Config is read-only.** Save settings from the Web UI and they will not persist into the mounted `config.toml`. Edit `./config.toml` on the host (or remount with `:rw` if you want UI writes to stick).
+- **Data path inside the container.** Image default is `/var/lib/rustcache` (cache → `cache/`, CA → `ca/`, request log → `logs.db`). Back up or restore the volume there.
 
 ### Build from source
 

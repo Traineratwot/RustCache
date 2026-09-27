@@ -34,6 +34,37 @@ pub fn wait_for_restart_parent() {
     );
 }
 
+/// Block until the process should exit (SIGTERM / SIGINT).
+///
+/// Docker sends SIGTERM to PID 1; without a handler the kernel ignores it for
+/// PID 1 and `docker stop` waits out `stop_grace_period` before SIGKILL.
+pub async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut term = match signal(SignalKind::terminate()) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::warn!(error = %e, "SIGTERM handler not installed");
+                None
+            }
+        };
+        tokio::select! {
+            _ = async {
+                match term.as_mut() {
+                    Some(t) => { t.recv().await; }
+                    None => std::future::pending::<()>().await,
+                }
+            } => {}
+            _ = tokio::signal::ctrl_c() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
 /// Spawned listener tasks; abort them at shutdown.
 pub struct ListenerTasks {
     http: JoinHandle<()>,

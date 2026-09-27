@@ -1,0 +1,12 @@
+services:
+  rustcache:
+    image: 'ghcr.io/traineratwot/rustcache:latest'
+    init: true
+    container_name: rustcache
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - './config.toml:/etc/rustcache/config.toml:ro'
+      - 'rustcache-data:/var/lib/rustcache'
+volumes:
+  rustcache-data:
