@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use rcgen::{CertificateParams, DistinguishedName, DnType, Issuer, KeyPair, SanType};
+use rcgen::{CertificateParams, DistinguishedName, DnType, Issuer, KeyPair};
+use time::{Duration, OffsetDateTime};
 
 use super::ca::CaMaterial;
 use crate::{Error, Result};
@@ -12,6 +13,16 @@ use crate::{Error, Result};
 ///
 /// Prevents unbounded growth when clients probe many SNI names.
 const MAX_CACHED_LEAVES: usize = 512;
+
+/// Leaf lifetime. Apple platforms reject TLS server certificates valid for more
+/// than 398 days, so rcgen's default (`1975..4096`) makes every MITM handshake
+/// fail on macOS/iOS clients. Leaves are cached in memory only and re-minted on
+/// restart, so a short window costs nothing.
+const LEAF_VALID_DAYS: i64 = 397;
+
+/// Backdate slightly so a client whose clock is a little behind still accepts
+/// the freshly minted certificate.
+const LEAF_BACKDATE_SECS: i64 = 3600;
 
 /// A leaf certificate (PEM) and private key for one host.
 #[derive(Clone)]
@@ -61,15 +72,18 @@ impl LeafIssuer {
 }
 
 fn sign_leaf(issuer: &CaIssuer, host: &str) -> Result<LeafCert> {
+    // `CertificateParams::new` already classifies the SAN: an IP literal becomes
+    // `SanType::IpAddress`, anything else a DNS name. Overwriting it with a bare
+    // `DnsName` produced certificates no client accepts for `https://127.0.0.1/`.
     let mut params =
         CertificateParams::new(vec![host.to_string()]).map_err(|e| Error::Cert(e.to_string()))?;
-    params.subject_alt_names = vec![SanType::DnsName(
-        host.try_into()
-            .map_err(|e| Error::Cert(format!("dns: {e:?}")))?,
-    )];
     let mut dn = DistinguishedName::new();
     dn.push(DnType::CommonName, host);
     params.distinguished_name = dn;
+
+    let now = OffsetDateTime::now_utc();
+    params.not_before = now - Duration::seconds(LEAF_BACKDATE_SECS);
+    params.not_after = now + Duration::days(LEAF_VALID_DAYS);
 
     let key = KeyPair::generate().map_err(|e| Error::Cert(e.to_string()))?;
     let cert = params
@@ -129,6 +143,54 @@ mod tests {
 
         // leaf is not the CA cert
         assert_ne!(leaf.cert_pem, ca.cert_pem);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn leaf_validity_is_client_acceptable() {
+        let dir = std::env::temp_dir().join(format!("rc-leaf-valid-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ca = generate_ca(&dir).unwrap();
+        let issuer = LeafIssuer::from_ca(&ca).unwrap();
+        let leaf = issuer.issue("example.com").unwrap();
+
+        let der = rustls_pemfile::certs(&mut leaf.cert_pem.as_bytes())
+            .next()
+            .unwrap()
+            .unwrap();
+        let (_, parsed) = x509_parser::parse_x509_certificate(der.as_ref()).unwrap();
+        let validity = parsed.validity();
+        let days = (validity.not_after.timestamp() - validity.not_before.timestamp()) / 86_400;
+        // Apple platforms reject server certs valid for more than 398 days.
+        assert!(days <= 398, "leaf valid for {days} days");
+        assert!(days >= 300, "leaf valid for only {days} days");
+    }
+
+    #[test]
+    fn ip_literal_host_gets_an_ip_san() {
+        let dir = std::env::temp_dir().join(format!("rc-leaf-ip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ca = generate_ca(&dir).unwrap();
+        let issuer = LeafIssuer::from_ca(&ca).unwrap();
+        let leaf = issuer.issue("127.0.0.1").unwrap();
+
+        let der = rustls_pemfile::certs(&mut leaf.cert_pem.as_bytes())
+            .next()
+            .unwrap()
+            .unwrap();
+        let (_, parsed) = x509_parser::parse_x509_certificate(der.as_ref()).unwrap();
+        let san = parsed
+            .subject_alternative_name()
+            .unwrap()
+            .expect("SAN extension");
+        assert!(
+            san.value
+                .general_names
+                .iter()
+                .any(|gn| matches!(gn, x509_parser::extensions::GeneralName::IPAddress(_))),
+            "IP host must yield an iPAddress SAN, got {:?}",
+            san.value.general_names
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

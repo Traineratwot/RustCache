@@ -247,23 +247,26 @@ impl CacheEngine {
         }
 
         let max_object_bytes = self.max_object_bytes();
-        // Do not coalesce authenticated fetches (per-user responses).
-        let coalesce_key = if has_auth {
-            format!("{key}:auth:{}", headers.len())
-        } else {
-            key.clone()
-        };
 
-        let resp = self
-            .coalesce
-            .run(&coalesce_key, || async {
-                self.fetcher
-                    .fetch(method, url, &headers, body, tls, max_object_bytes)
-                    .await
-                    .map_err(|e| e.to_string())
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?;
+        // Authenticated fetches are never coalesced: the response is specific
+        // to one set of credentials. The previous key (`{key}:auth:{n}`) only
+        // varied by header *count*, so two users with the same number of
+        // headers asking for the same URL shared one upstream response.
+        let resp = if has_auth {
+            self.fetcher
+                .fetch(method, url, &headers, body, tls, max_object_bytes)
+                .await?
+        } else {
+            self.coalesce
+                .run(&key, || async {
+                    self.fetcher
+                        .fetch(method, url, &headers, body, tls, max_object_bytes)
+                        .await
+                        .map_err(|e| e.to_string())
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?
+        };
 
         if resp.status == 304 {
             return self.apply_revalidation(&key, resp, revalidate).await;
@@ -300,14 +303,41 @@ impl CacheEngine {
                 ));
             }
         };
-        let _ = resp;
         self.metrics.add_revalidation();
-        let mut meta = prev.meta.clone();
-        meta.last_access = now_ms();
-        // extend freshness from policy re-parse of original headers
-        let policy = CachePolicy::from_headers(prev.meta.status, &prev.meta.headers);
-        if let Some(ttl) = policy.ttl() {
-            meta.expires_at = Some(now_ms() + ttl.as_millis() as u64);
+
+        // The 304 carries the origin's *new* freshness information. Re-parsing
+        // the stored headers instead (as this used to) replayed the original,
+        // already-expired `Date`/`max-age`, so every single request went back
+        // to the origin even though it had just said "not modified".
+        let has_fresh_date = resp
+            .headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("date"));
+        let headers = merge_revalidated_headers(&prev.meta.headers, &resp.headers);
+        let policy = CachePolicy::from_headers(prev.meta.status, &headers);
+        let now = now_ms();
+        let mut meta = policy.to_meta(key, &prev.meta.url, prev.meta.status, headers);
+        meta.body_len = prev.meta.body_len;
+        meta.last_access = now;
+
+        // `max-age` counts from the response `Date`. When the 304 omits it we
+        // are left with the stored one, which is exactly as old as the entry —
+        // so the "refreshed" entry came back already expired and every request
+        // turned into a conditional round-trip. Freshness restarts at receipt
+        // time instead (RFC 9111 §4.2.3). `max-age=0` still yields `now`, i.e.
+        // revalidate again next time, which is what the origin asked for.
+        if !has_fresh_date {
+            if let Some(ma) = policy.s_maxage.or(policy.max_age) {
+                meta.expires_at = Some(now + ma.saturating_mul(1000));
+            }
+        }
+        // Validators only, no freshness information anywhere: keep the entry
+        // usable briefly rather than revalidating on the very next request.
+        // Not when the origin explicitly demands revalidation — `no-cache` and
+        // `must-revalidate` mean exactly "check with me every time".
+        let must_recheck = policy.no_cache || policy.must_revalidate;
+        if meta.expires_at.is_none() && !must_recheck {
+            meta.expires_at = Some(now + REVALIDATED_MIN_FRESH_MS);
         }
         let entry = CachedEntry {
             meta: meta.clone(),
@@ -425,6 +455,44 @@ impl CacheEngine {
     pub fn mem(&self) -> &MemCache {
         &self.mem
     }
+}
+
+/// Headers a `304 Not Modified` is allowed to refresh on the stored entry
+/// (RFC 9111 §4.3.4). Everything else keeps the stored value.
+const REVALIDATION_HEADERS: [&str; 6] = [
+    "cache-control",
+    "date",
+    "etag",
+    "expires",
+    "last-modified",
+    "vary",
+];
+
+/// Freshness floor applied after a successful revalidation that carried no
+/// usable `Cache-Control`/`Expires`. Without it, a validator-only origin makes
+/// every request a conditional round-trip.
+const REVALIDATED_MIN_FRESH_MS: u64 = 60_000;
+
+/// Overlay the 304's freshness/validator headers onto the stored ones.
+fn merge_revalidated_headers(
+    stored: &[(String, String)],
+    fresh: &[(String, String)],
+) -> Vec<(String, String)> {
+    let updated: Vec<&(String, String)> = fresh
+        .iter()
+        .filter(|(k, _)| {
+            REVALIDATION_HEADERS
+                .iter()
+                .any(|h| k.eq_ignore_ascii_case(h))
+        })
+        .collect();
+    let mut out: Vec<(String, String)> = stored
+        .iter()
+        .filter(|(k, _)| !updated.iter().any(|(uk, _)| uk.eq_ignore_ascii_case(k)))
+        .cloned()
+        .collect();
+    out.extend(updated.into_iter().cloned());
+    out
 }
 
 /// Build a TLS connector for upstream HTTPS using webpki roots.

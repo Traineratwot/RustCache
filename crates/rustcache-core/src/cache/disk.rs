@@ -100,16 +100,22 @@ impl DiskCache {
         let tmp_index = self.root.join("tmp").join(format!("{key}.json.tmp"));
         let tmp_object = self.root.join("tmp").join(format!("{key}.body.tmp"));
 
-        write_atomic(&tmp_index, &index, &serde_json::to_vec(&meta)?).await?;
+        // Body first: a crash between the two renames must never leave an index
+        // entry pointing at a missing body (that would read back as a 0-byte hit).
         write_atomic(&tmp_object, &object, body).await?;
+        write_atomic(&tmp_index, &index, &serde_json::to_vec(&meta)?).await?;
         Ok(())
     }
 
     /// Touch `last_access` for LRU (best-effort).
+    ///
+    /// Takes the write lock: without it a `touch` racing a `remove` re-creates
+    /// the index file for an object that is already gone.
     pub async fn touch(&self, key: &str) -> Result<()> {
         if !is_hex_key(key) {
             return Ok(());
         }
+        let _guard = self.write_lock.lock().await;
         let mut meta = match self.load_meta(key).await? {
             Some(m) => m,
             None => return Ok(()),
@@ -230,10 +236,8 @@ async fn remove_tree_files(dir: &Path) -> Result<u64> {
             let path = ent.path();
             if ent.file_type().await?.is_dir() {
                 stack.push(path);
-            } else {
-                if tokio::fs::remove_file(&path).await.is_ok() {
-                    removed += 1;
-                }
+            } else if tokio::fs::remove_file(&path).await.is_ok() {
+                removed += 1;
             }
         }
     }

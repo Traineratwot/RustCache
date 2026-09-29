@@ -448,11 +448,13 @@ mod tests {
     use super::*;
 
     fn base() -> Config {
-        let mut c = Config::default();
-        c.data_dir = std::env::temp_dir()
-            .join(format!("rc-validate-{}", std::process::id()))
-            .to_string_lossy()
-            .into_owned();
+        let c = Config {
+            data_dir: std::env::temp_dir()
+                .join(format!("rc-validate-{}", std::process::id()))
+                .to_string_lossy()
+                .into_owned(),
+            ..Config::default()
+        };
         let _ = std::fs::create_dir_all(&c.data_dir);
         c
     }

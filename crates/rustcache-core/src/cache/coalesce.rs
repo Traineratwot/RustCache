@@ -57,16 +57,20 @@ impl<T: Clone> Coalesce<T> {
             }
         }
 
-        // Leader path.
+        // Leader path. The guard clears the in-flight slot on every exit,
+        // including when this future is dropped (client disconnect) — otherwise
+        // the stale sender would live in the map forever and every later caller
+        // for this key would wait on a broadcast that never fires.
         let tx = {
             let map = self.inflight.lock();
             map.get(key).cloned()
         };
+        let guard = InflightGuard {
+            inflight: &self.inflight,
+            key,
+        };
         let result = f().await;
-        {
-            let mut map = self.inflight.lock();
-            map.remove(key);
-        }
+        drop(guard);
         if let (Some(v), Some(tx)) = (result.as_ref().ok().cloned(), tx) {
             let _ = tx.send(v);
         }
@@ -78,7 +82,20 @@ impl<T: Clone> Coalesce<T> {
     }
 }
 
-/// Shared handle.
+/// Removes the leader's in-flight slot on drop (normal return, error, or
+/// cancellation). Dropping the map's `Sender` closes the broadcast, which is
+/// how waiters learn the leader is gone and fall back to their own fetch.
+struct InflightGuard<'a, T: Clone> {
+    inflight: &'a Mutex<HashMap<String, broadcast::Sender<T>>>,
+    key: &'a str,
+}
+
+impl<T: Clone> Drop for InflightGuard<'_, T> {
+    fn drop(&mut self) {
+        self.inflight.lock().remove(self.key);
+    }
+}
+
 // Note: a `SharedCoalesce<T>` alias used to live here; callers that need
 // sharing wrap `Coalesce` in `Arc` themselves.
 
@@ -112,5 +129,37 @@ mod tests {
             assert_eq!(h.await.unwrap(), 7);
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn cancelled_leader_releases_the_key() {
+        let c: Arc<Coalesce<u32>> = Arc::new(Coalesce::new());
+
+        // Leader starts, then its future is dropped mid-flight.
+        let leader = {
+            let c = c.clone();
+            tokio::spawn(async move {
+                let _ = c
+                    .run("k", || async {
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                        Ok::<u32, std::convert::Infallible>(1)
+                    })
+                    .await;
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(c.inflight_len(), 1);
+        leader.abort();
+        let _ = leader.await;
+
+        // The slot must be free again, and a new caller must not hang.
+        assert_eq!(c.inflight_len(), 0);
+        let v = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            c.run("k", || async { Ok::<u32, std::convert::Infallible>(9) }),
+        )
+        .await
+        .expect("must not hang after a cancelled leader");
+        assert_eq!(v.unwrap(), 9);
     }
 }

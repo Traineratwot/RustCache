@@ -141,8 +141,8 @@ mod tests {
     async fn weigher_evicts_under_capacity() {
         // capacity is in weighted body-bytes; insert more than max
         let mem = MemCache::new(10);
-        mem.insert("a", entry(&vec![0u8; 8]), None).await;
-        mem.insert("b", entry(&vec![0u8; 8]), None).await;
+        mem.insert("a", entry(&[0u8; 8]), None).await;
+        mem.insert("b", entry(&[0u8; 8]), None).await;
         mem.sync().await.unwrap();
         assert!(mem.entry_count() <= 1);
     }

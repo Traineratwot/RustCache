@@ -18,10 +18,15 @@ use tower::util::ServiceExt;
 async fn make_state() -> (ApiState, std::path::PathBuf) {
     let (engine, dir) = spawn_engine(ExclusionSet::default()).await;
     let ca = generate_ca(dir.join("ca")).unwrap();
-    let mut cfg = Config::default();
     // Keep path validation hermetic — do not touch the real home data dir.
-    cfg.data_dir = dir.to_string_lossy().into_owned();
-    cfg.logs.db_path = "logs.db".into();
+    let cfg = Config {
+        data_dir: dir.to_string_lossy().into_owned(),
+        logs: rustcache::config::schema::LogConfig {
+            db_path: "logs.db".into(),
+            ..Default::default()
+        },
+        ..Config::default()
+    };
     let state = ApiState {
         engine,
         config: LiveConfig::new(cfg),

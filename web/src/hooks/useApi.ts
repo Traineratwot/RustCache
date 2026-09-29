@@ -15,14 +15,14 @@ export interface UseApiResult<T> {
 }
 
 /**
- * Fetch `fn` on mount and whenever `deps` change.
+ * Fetch `fn` on mount, whenever `deps` change, and on `reload()`.
  * Ignores stale responses if the component unmounted or a newer call started.
  */
-export function useApi<T>(fn: () => Promise<T>, _deps: React.DependencyList = []): UseApiResult<T> {
+export function useApi<T>(fn: () => Promise<T>, deps: React.DependencyList = []): UseApiResult<T> {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [_tick, setTick] = useState(0);
+  const [tick, setTick] = useState(0);
   const alive = useRef(true);
   const fnRef = useRef(fn);
   fnRef.current = fn;
@@ -35,6 +35,9 @@ export function useApi<T>(fn: () => Promise<T>, _deps: React.DependencyList = []
   }, []);
 
   useEffect(() => {
+    // Reading `tick` is what ties `reload()` to this effect; `fn` is read
+    // through a ref so an inline fetcher does not refetch on every render.
+    void tick;
     let cancelled = false;
     setLoading(true);
     fnRef
@@ -56,8 +59,7 @@ export function useApi<T>(fn: () => Promise<T>, _deps: React.DependencyList = []
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [tick, ...deps]);
 
   const reload = useCallback(() => setTick((n) => n + 1), []);
   const setDataLocal = useCallback((updater: T | ((prev: T | null) => T | null)) => {

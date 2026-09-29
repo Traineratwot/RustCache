@@ -14,9 +14,8 @@ use rustcache_core::stats::{Outcome, ReqRecord};
 
 use crate::engine::{SharedEngine, upstream_tls_connector};
 use crate::listeners::serve::{RequestContext, resolve_cached};
-use crate::listeners::wire::{
-    HttpRequest, host_of, read_http_request as read_request, write_http_response,
-};
+use crate::listeners::wire::{HttpRequest, host_of, write_http_response};
+use crate::listeners::{CONNECT_TIMEOUT, connect_with_timeout, read_request_with_timeout};
 
 // Re-export for integration tests and sibling listeners.
 pub use super::wire::{cache_headers, entry_age_secs, read_http_request};
@@ -43,7 +42,7 @@ pub async fn serve_connection(stream: TcpStream, engine: SharedEngine) -> anyhow
 
 async fn handle_conn(mut stream: TcpStream, engine: SharedEngine) -> anyhow::Result<()> {
     let _ = stream.set_nodelay(true);
-    let req = match read_request(&mut stream).await? {
+    let req = match read_request_with_timeout(&mut stream).await? {
         Some(r) => r,
         None => return Ok(()),
     };
@@ -63,7 +62,7 @@ async fn handle_connect(
     let host = host_of(&target).to_string();
     engine.metrics().add_tunnel();
 
-    match TcpStream::connect(&target).await {
+    match connect_with_timeout(&target, CONNECT_TIMEOUT).await {
         Ok(mut upstream) => {
             stream
                 .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")

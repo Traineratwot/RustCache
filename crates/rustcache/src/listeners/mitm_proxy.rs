@@ -12,14 +12,73 @@ use tokio::net::{TcpListener, TcpStream};
 use rustcache_core::certs::leaf::LeafIssuer;
 use rustcache_core::http::fetch::parse_url;
 
+use rustcache_core::cache::meta::now_ms;
+
 use crate::engine::{SharedEngine, upstream_tls_connector};
 use crate::listeners::serve::{RequestContext, resolve_cached};
-use crate::listeners::wire::{HttpRequest, host_of, read_http_request, write_http_response};
+use crate::listeners::wire::{HttpRequest, host_of, write_http_response};
+use crate::listeners::{
+    CONNECT_TIMEOUT, HANDSHAKE_TIMEOUT, connect_with_timeout, read_request_with_timeout,
+};
+
+/// How long a host stays on the MITM denylist after a failure.
+///
+/// The entry used to be permanent: one transient TLS error (origin hiccup,
+/// client that aborts the handshake, a pinned app) disabled MITM — and so all
+/// caching — for that host until the process restarted.
+const DENYLIST_TTL_MS: u64 = 5 * 60 * 1000;
 
 pub struct MitmState {
     pub engine: SharedEngine,
     pub leaves: Arc<LeafIssuer>,
+    /// host → unix millis when it was denylisted.
     pub denylist: Arc<dashmap::DashMap<String, u64>>,
+    /// host → ready-to-use rustls config. Building one means parsing the leaf
+    /// PEM and validating the key, which is far too expensive to redo on every
+    /// CONNECT (the MITM path serves one request per TLS connection).
+    pub tls_configs: Arc<dashmap::DashMap<String, Arc<rustls::ServerConfig>>>,
+}
+
+/// Bounded like the leaf cache: drop everything when full rather than track LRU.
+const MAX_CACHED_TLS_CONFIGS: usize = 512;
+
+impl MitmState {
+    /// True when `host` is currently denylisted; expired entries are dropped.
+    fn is_denylisted(&self, host: &str) -> bool {
+        let Some(since) = self.denylist.get(host).map(|e| *e.value()) else {
+            return false;
+        };
+        if now_ms().saturating_sub(since) < DENYLIST_TTL_MS {
+            return true;
+        }
+        self.denylist.remove(host);
+        false
+    }
+
+    fn denylist(&self, host: &str) {
+        self.denylist.insert(host.to_string(), now_ms());
+    }
+
+    /// Cached rustls config for `host`, built from a freshly issued leaf on miss.
+    fn tls_config(&self, host: &str) -> anyhow::Result<Arc<rustls::ServerConfig>> {
+        if let Some(hit) = self.tls_configs.get(host) {
+            return Ok(hit.value().clone());
+        }
+        let leaf = self.leaves.issue(host)?;
+        let cert_chain = vec![pem_to_der_cert(&leaf.cert_pem)?];
+        let key = pem_to_der_key(&leaf.key_pem)?;
+        let mut cfg = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(cert_chain, key)
+            .map_err(|e| anyhow::anyhow!("tls server config: {e}"))?;
+        cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let cfg = Arc::new(cfg);
+        if self.tls_configs.len() >= MAX_CACHED_TLS_CONFIGS {
+            self.tls_configs.clear();
+        }
+        self.tls_configs.insert(host.to_string(), cfg.clone());
+        Ok(cfg)
+    }
 }
 
 /// Accept loop on a pre-bound listener (bind happens in `main` so failures are visible).
@@ -31,12 +90,14 @@ pub async fn serve(
     let addr = listener.local_addr()?;
     tracing::info!(%addr, "https mitm listening");
     let denylist = Arc::new(dashmap::DashMap::new());
+    let tls_configs = Arc::new(dashmap::DashMap::new());
     loop {
         let (stream, peer) = listener.accept().await?;
         let state = MitmState {
             engine: engine.clone(),
             leaves: leaves.clone(),
             denylist: denylist.clone(),
+            tls_configs: tls_configs.clone(),
         };
         tokio::spawn(async move {
             if let Err(e) = handle_conn(stream, state).await {
@@ -56,13 +117,14 @@ pub async fn serve_connection(
         engine,
         leaves,
         denylist: Arc::new(dashmap::DashMap::new()),
+        tls_configs: Arc::new(dashmap::DashMap::new()),
     };
     handle_conn(stream, state).await
 }
 
 async fn handle_conn(mut client: TcpStream, state: MitmState) -> anyhow::Result<()> {
     let _ = client.set_nodelay(true);
-    let req = match read_http_request(&mut client).await? {
+    let req = match read_request_with_timeout(&mut client).await? {
         Some(r) => r,
         None => return Ok(()),
     };
@@ -73,7 +135,7 @@ async fn handle_conn(mut client: TcpStream, state: MitmState) -> anyhow::Result<
     let authority = req.target.clone();
     let host = host_of(&authority).to_string();
 
-    if state.denylist.contains_key(&host) {
+    if state.is_denylisted(&host) {
         tracing::debug!(%host, "mitm denylist → splice");
         return splice_raw(&mut client, &authority, &state.engine).await;
     }
@@ -93,37 +155,35 @@ async fn handle_conn(mut client: TcpStream, state: MitmState) -> anyhow::Result<
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         .await?;
 
-    let leaf = match state.leaves.issue(&host) {
-        Ok(l) => l,
+    let cfg = match state.tls_config(&host) {
+        Ok(c) => c,
         Err(e) => {
             state.engine.metrics().add_error();
             tracing::warn!(%host, error = %e, "leaf issue failed");
-            state.denylist.insert(host.clone(), 0);
+            state.denylist(&host);
             return Ok(());
         }
     };
 
-    let cert_chain = vec![pem_to_der_cert(&leaf.cert_pem)?];
-    let key = pem_to_der_key(&leaf.key_pem)?;
-    let mut cfg = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(cert_chain, key)
-        .map_err(|e| anyhow::anyhow!("tls server config: {e}"))?;
-    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
-
-    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(cfg));
-    let mut tls_stream = match acceptor.accept(client).await {
-        Ok(s) => s,
-        Err(e) => {
+    let acceptor = tokio_rustls::TlsAcceptor::from(cfg);
+    let accept = tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(client));
+    let mut tls_stream = match accept.await {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
             state.engine.metrics().add_error();
-            state.denylist.insert(host.clone(), 0);
+            state.denylist(&host);
             tracing::debug!(%host, error = %e, "mitm tls accept failed");
+            return Ok(());
+        }
+        Err(_) => {
+            state.engine.metrics().add_error();
+            tracing::debug!(%host, "mitm tls handshake timed out");
             return Ok(());
         }
     };
 
     // Serve one HTTP/1.1 request over the MITM stream (Connection: close).
-    let req = match read_http_request(&mut tls_stream).await? {
+    let req = match read_request_with_timeout(&mut tls_stream).await? {
         Some(r) => r,
         None => return Ok(()),
     };
@@ -186,7 +246,7 @@ async fn splice_raw(
     authority: &str,
     engine: &SharedEngine,
 ) -> anyhow::Result<()> {
-    let mut upstream = TcpStream::connect(authority).await?;
+    let mut upstream = connect_with_timeout(authority, CONNECT_TIMEOUT).await?;
     client
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         .await?;
@@ -204,7 +264,7 @@ async fn pipe_upgrade<S: AsyncReadExt + AsyncWriteExt + Unpin>(
 ) -> anyhow::Result<()> {
     // Connect to the CONNECT authority over TLS and pipe the upgraded connection.
     let host = host_of(authority).to_string();
-    let tcp = TcpStream::connect(authority).await?;
+    let tcp = connect_with_timeout(authority, CONNECT_TIMEOUT).await?;
     let connector = upstream_tls_connector();
     let domain =
         rustls::pki_types::ServerName::try_from(host).map_err(|_| anyhow::anyhow!("bad sni"))?;

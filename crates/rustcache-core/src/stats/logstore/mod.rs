@@ -8,10 +8,13 @@ mod analytics;
 mod dto;
 mod outcome;
 mod query;
+mod redact;
 mod schema;
 mod writer;
 
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, channel, sync_channel};
 
 use rusqlite::Connection;
@@ -20,6 +23,7 @@ pub use dto::{
     HostStat, LogPage, LogQuery, LogStats, LogStatsQuery, OutcomeStat, ReqRecord, SeriesPoint,
 };
 pub use outcome::Outcome;
+pub use redact::redact_url;
 
 use schema::{init_schema, set_db_mode};
 use writer::{LogCmd, WriterState, handle_cmd, recv_result};
@@ -31,6 +35,8 @@ const DEFAULT_MAX_ROWS: u64 = 10_000;
 #[derive(Clone)]
 pub struct LogStore {
     tx: SyncSender<LogCmd>,
+    /// Records dropped because the writer channel was full (overload signal).
+    dropped: Arc<AtomicU64>,
 }
 
 impl LogStore {
@@ -43,8 +49,10 @@ impl LogStore {
             }
         }
         let conn = Connection::open(path)?;
-        set_db_mode(path);
         init_schema(&conn)?;
+        // After init_schema: WAL mode creates `-wal`/`-shm` siblings that hold
+        // the same request data, and they must be locked down too.
+        set_db_mode(path);
         let (tx, rx) = sync_channel::<LogCmd>(CHANNEL_CAP);
         let mut state = WriterState {
             conn,
@@ -60,13 +68,25 @@ impl LogStore {
                 }
             })
             .map_err(|e| anyhow::anyhow!("spawn log writer: {e}"))?;
-        Ok(Self { tx })
+        Ok(Self {
+            tx,
+            dropped: Arc::new(AtomicU64::new(0)),
+        })
     }
 
     /// Non-blocking enqueue. Drops the record if the channel is full.
-    pub fn enqueue(&self, rec: ReqRecord) {
+    ///
+    /// Credential-looking query parameters are redacted here — one choke point
+    /// every caller goes through, so no listener can forget to sanitize.
+    pub fn enqueue(&self, mut rec: ReqRecord) {
+        rec.url = redact::redact_url(&rec.url);
         if self.tx.try_send(LogCmd::Insert(rec)).is_err() {
-            tracing::warn!("request log channel full, dropping record");
+            // Rate-limited: a full channel means a burst, and one warning per
+            // dropped record would drown the log it is complaining about.
+            let dropped = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+            if dropped.is_power_of_two() {
+                tracing::warn!(dropped, "request log channel full, dropping records");
+            }
         }
     }
 

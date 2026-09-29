@@ -11,8 +11,19 @@ use crate::config::Config;
 use crate::engine::SharedEngine;
 use crate::listeners;
 
+/// True while `pid` names a live process.
+///
+/// `kill(pid, 0)` is the portable liveness probe. The previous `/proc/{pid}`
+/// check silently reported "already gone" on every non-Linux unix (macOS, the
+/// BSDs), so a UI-triggered restart raced the old process for the ports.
+fn process_alive(pid: u32) -> bool {
+    // SAFETY: signal 0 performs the permission/existence check only; it never
+    // delivers a signal and touches no memory we own.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
 /// After a UI-triggered self-restart the previous process may still hold the
-/// listening sockets. Wait until it exits (Linux `/proc`) plus a short grace.
+/// listening sockets. Wait until it exits, plus a short grace.
 pub fn wait_for_restart_parent() {
     let Ok(v) = std::env::var("RUSTCACHE_RESTARTED_FROM") else {
         return;
@@ -22,7 +33,9 @@ pub fn wait_for_restart_parent() {
     };
     tracing::info!(parent = pid, "waiting for previous process to exit");
     for _ in 0..100 {
-        if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+        if !process_alive(pid) {
+            // Grace period: the kernel releases the listening sockets slightly
+            // after the process disappears from the table.
             std::thread::sleep(std::time::Duration::from_millis(100));
             return;
         }
@@ -176,5 +189,26 @@ pub async fn bring_up_listeners(
         https,
         socks5,
         pac,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::process_alive;
+
+    #[test]
+    fn detects_the_current_process_as_alive() {
+        assert!(process_alive(std::process::id()));
+    }
+
+    #[test]
+    fn reports_an_unused_pid_as_gone() {
+        // Spawn and reap a trivial child, then probe its now-free pid.
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn probe child");
+        let pid = child.id();
+        let _ = child.wait();
+        assert!(!process_alive(pid), "reaped pid {pid} must read as gone");
     }
 }
