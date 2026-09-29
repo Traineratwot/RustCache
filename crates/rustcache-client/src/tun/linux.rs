@@ -2,35 +2,17 @@
 
 use std::process::Command;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use super::TunSnapshot;
 
 const IFACE: &str = "rustcache-tun0";
 
 /// Create the TUN interface and install capture routes (0.0.0.0/1 + 128.0.0.0/1).
+/// Routes are added by `stack::event_loop()` after device creation.
 pub async fn create_interface() -> Result<TunSnapshot> {
-    // The actual TUN device is created by `tun` crate in stack::open_tun.
-    // Here we configure the routes.
     let addr = crate::tun::TUN_ADDR.to_string();
     let routes = vec!["0.0.0.0/1".to_string(), "128.0.0.0/1".to_string()];
-
-    // Add routes via `ip route` (Linux).
-    for r in &routes {
-        let out = Command::new("ip")
-            .args(["route", "add", r, "dev", IFACE])
-            .output()
-            .context("ip route add")?;
-        if !out.status.success() {
-            tracing::warn!(
-                route = %r,
-                stderr = %String::from_utf8_lossy(&out.stderr),
-                "route add failed (may already exist)"
-            );
-        }
-    }
-
-    // Save the old default gateway for DNS route recovery.
     let old_default = get_default_gateway().await;
 
     Ok(TunSnapshot {

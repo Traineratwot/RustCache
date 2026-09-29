@@ -4164,6 +4164,7 @@ dependencies = [
  "egui",
  "hex",
  "image",
+ "libc",
  "nix 0.29.0",
  "parking_lot",
  "serde",

@@ -228,7 +228,7 @@ impl eframe::App for ClientApp {
                 for (label, mode) in [
                     ("Off", CaptureMode::Off),
                     ("System", CaptureMode::System),
-                    ("TUN (soon)", CaptureMode::Tun),
+                    ("TUN", CaptureMode::Tun),
                 ] {
                     let selected = state.mode == mode;
                     if ui.selectable_label(selected, label).clicked() {

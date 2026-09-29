@@ -81,14 +81,9 @@ pub struct TunSession {
 
 /// Enable TUN capture. Returns the session (keeps the device alive).
 pub async fn enable(local_proxy: &str) -> Result<TunSession> {
-    // 1. Create TUN device + configure address/routes.
-    let snapshot = create_interface().await?;
-    // 2. Preserve DNS routes through the old gateway.
-    let dns_routes = preserve_dns_routes(&snapshot).await?;
-    let mut snap = snapshot;
-    snap.dns_routes = dns_routes;
-
-    // 3. Spawn the userspace TCP stack.
+    // The TUN device + routes are created inside the event loop (correct order:
+    // device first, then routes). We spawn the stack and build a snapshot for
+    // dirty-recovery from what we know.
     let proxy = local_proxy.to_string();
     let task = tokio::spawn(async move {
         if let Err(e) = stack::run(&proxy).await {
@@ -96,10 +91,46 @@ pub async fn enable(local_proxy: &str) -> Result<TunSession> {
         }
     });
 
+    // Give the event loop a moment to create the device + routes.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // Build a snapshot for dirty-recovery (no route commands here — event_loop does that).
+    let snap = TunSnapshot {
+        iface: "rustcache-tun0".into(),
+        addr: TUN_ADDR.to_string(),
+        routes: vec!["0.0.0.0/1".into(), "128.0.0.0/1".into()],
+        dns_routes: Vec::new(),
+        old_default: get_old_default().await,
+    };
+
+    // Preserve DNS routes through the old gateway.
+    let dns_routes = preserve_dns_routes(&snap).await?;
+    let mut snap = snap;
+    snap.dns_routes = dns_routes;
+
     Ok(TunSession {
         snapshot: snap,
         _task: task,
     })
+}
+
+/// Get the current default gateway (for DNS host-route recovery).
+async fn get_old_default() -> Option<String> {
+    let out = tokio::process::Command::new("ip")
+        .args(["route", "show", "default"])
+        .output()
+        .await
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    for line in text.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if let Some(idx) = parts.iter().position(|&p| p == "via") {
+            if let Some(gw) = parts.get(idx + 1) {
+                return Some(gw.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Tear down TUN: remove routes + interface.
@@ -108,6 +139,7 @@ pub async fn disable(snap: &TunSnapshot) -> Result<String> {
 }
 
 /// Create the TUN device and install the capture routes.
+#[allow(dead_code)]
 async fn create_interface() -> Result<TunSnapshot> {
     #[cfg(target_os = "linux")]
     {

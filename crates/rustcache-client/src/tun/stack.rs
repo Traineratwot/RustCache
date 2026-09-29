@@ -1,254 +1,567 @@
-//! smoltcp userspace TCP stack: reads packets from TUN, handles TCP flows.
+//! smoltcp userspace TCP stack over TUN with IP-rewriting.
 //!
-//! TCP :80  → HTTP-proxy handshake to 127.0.0.1:31280 (absolute-form)
-//! TCP :443 → CONNECT dest to 127.0.0.1:31280
-//! TCP other → raw splice DIRECT (fail-open)
+//! Accepts TCP connections destined for **any** IP (transparent), rewrites
+//! dst→198.18.0.1 for smoltcp, rewrites src→original-dst on egress.
+//!
+//! TCP :80  → HTTP absolute-form to 127.0.0.1:31280 + client marker
+//! TCP :443 → CONNECT to 127.0.0.1:31280, then splice
+//! TCP other → DIRECT splice (fail-open)
 //! UDP → drop
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::os::unix::io::{AsRawFd, RawFd};
+use std::rc::Rc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
+use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
+use smoltcp::socket::tcp;
+use smoltcp::time::Instant as SmolInstant;
+use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr, Ipv4Address};
 
-/// Hand-off: TUN flow emulates a ProxyServer client (does NOT call internal handle_*).
-/// If the proxy is down, the flow goes DIRECT (fail-open).
-pub async fn run(local_proxy: &str) -> Result<()> {
-    // Open the TUN device (platform-specific).
-    let mut tun = open_tun().await?;
+const TUN_IP: Ipv4Address = Ipv4Address::new(198, 18, 0, 1);
+const TUN_PREFIX: u8 = 15;
+const MTU: usize = 1500;
+const MAX_LISTENERS_PER_PORT: usize = 16;
+const SOCK_BUF: usize = 16384;
 
-    let proxy_addr = local_proxy.to_string();
-    let mut flows: HashMap<u16, FlowState> = HashMap::new();
+/// (client_ip, client_port) → (orig_dst_ip, orig_dst_port)
+type FlowMap = Rc<RefCell<HashMap<(Ipv4Address, u16), (Ipv4Address, u16)>>>;
 
-    let mut buf = [0u8; 2048];
-    loop {
-        let n = tokio::time::timeout(Duration::from_secs(30), tun.read(&mut buf))
-            .await
-            .context("tun read timeout")?
-            .context("tun read")?;
-        if n == 0 {
-            continue;
-        }
-        let pkt = &buf[..n];
-        if let Some((src_port, dst_port, syn, payload_off)) = parse_tcp_packet(pkt) {
-            if syn && payload_off == 0 {
-                // New connection — decide the path.
-                let route = if dst_port == 80 {
-                    Route::HttpProxy
-                } else if dst_port == 443 {
-                    Route::ConnectProxy
-                } else {
-                    Route::Direct
-                };
-                flows.insert(src_port, FlowState { route, first: true });
-            } else if let Some(flow) = flows.get_mut(&src_port) {
-                if flow.first && payload_off > 0 {
-                    flow.first = false;
-                    // Spawn a handler for this flow's data.
-                    let route = flow.route;
-                    let proxy = proxy_addr.clone();
-                    let data = pkt[payload_off..].to_vec();
-                    tokio::spawn(async move {
-                        if let Err(e) = handle_flow(route, &proxy, dst_port, &data).await {
-                            tracing::debug!(error = %e, "tun flow error");
-                        }
-                    });
-                }
-            }
-        }
-        // UDP or unknown → drop (per plan).
+// ──────────────────────────── checksums ────────────────────────────
+
+fn ip_checksum(hdr: &[u8]) -> u16 {
+    let mut sum = 0u32;
+    for i in (0..hdr.len()).step_by(2) {
+        sum += if i + 1 < hdr.len() {
+            u16::from_be_bytes([hdr[i], hdr[i + 1]]) as u32
+        } else {
+            (hdr[i] as u32) << 8
+        };
+    }
+    while sum >> 16 != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+fn fix_tcp_checksum(pkt: &mut [u8]) {
+    if pkt.len() < 20 || pkt[0] >> 4 != 4 {
+        return;
+    }
+    let ihl = (pkt[0] & 0x0f) as usize * 4;
+    if pkt[9] != 6 || pkt.len() < ihl + 20 {
+        return;
+    }
+    let tcp_len = pkt.len() - ihl;
+    pkt[ihl + 16] = 0;
+    pkt[ihl + 17] = 0;
+
+    let mut sum = 0u32;
+    // pseudo-header: src_ip + dst_ip + protocol + tcp_len
+    sum += u16::from_be_bytes([pkt[12], pkt[13]]) as u32;
+    sum += u16::from_be_bytes([pkt[14], pkt[15]]) as u32;
+    sum += u16::from_be_bytes([pkt[16], pkt[17]]) as u32;
+    sum += u16::from_be_bytes([pkt[18], pkt[19]]) as u32;
+    sum += 6u32;
+    sum += tcp_len as u32;
+    // tcp header + data
+    for i in (0..tcp_len).step_by(2) {
+        sum += if i + 1 < tcp_len {
+            u16::from_be_bytes([pkt[ihl + i], pkt[ihl + i + 1]]) as u32
+        } else {
+            (pkt[ihl + i] as u32) << 8
+        };
+    }
+    while sum >> 16 != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    let csum = !(sum as u16);
+    pkt[ihl + 16] = (csum >> 8) as u8;
+    pkt[ihl + 17] = (csum & 0xff) as u8;
+}
+
+/// Rewrite IPv4 dst (bytes 16..20), then fix IP + TCP checksums.
+fn rewrite_dst(pkt: &mut [u8], new: Ipv4Address) {
+    if pkt.len() < 20 || pkt[0] >> 4 != 4 {
+        return;
+    }
+    let o = new.octets();
+    pkt[16] = o[0];
+    pkt[17] = o[1];
+    pkt[18] = o[2];
+    pkt[19] = o[3];
+    pkt[10] = 0;
+    pkt[11] = 0;
+    let c = ip_checksum(&pkt[..20]);
+    pkt[10] = (c >> 8) as u8;
+    pkt[11] = (c & 0xff) as u8;
+    fix_tcp_checksum(pkt);
+}
+
+/// Rewrite IPv4 src (bytes 12..16), then fix IP + TCP checksums.
+fn rewrite_src(pkt: &mut [u8], new: Ipv4Address) {
+    if pkt.len() < 20 || pkt[0] >> 4 != 4 {
+        return;
+    }
+    let o = new.octets();
+    pkt[12] = o[0];
+    pkt[13] = o[1];
+    pkt[14] = o[2];
+    pkt[15] = o[3];
+    pkt[10] = 0;
+    pkt[11] = 0;
+    let c = ip_checksum(&pkt[..20]);
+    pkt[10] = (c >> 8) as u8;
+    pkt[11] = (c & 0xff) as u8;
+    fix_tcp_checksum(pkt);
+}
+
+/// Extract (src_ip, src_port, dst_ip, dst_port) from an IPv4+TCP packet.
+fn parse_ipv4_tcp(pkt: &[u8]) -> Option<(Ipv4Address, u16, Ipv4Address, u16)> {
+    if pkt.len() < 40 || pkt[0] >> 4 != 4 {
+        return None;
+    }
+    let ihl = (pkt[0] & 0x0f) as usize * 4;
+    if pkt[9] != 6 || pkt.len() < ihl + 20 {
+        return None;
+    }
+    let src_ip = Ipv4Address::new(pkt[12], pkt[13], pkt[14], pkt[15]);
+    let dst_ip = Ipv4Address::new(pkt[16], pkt[17], pkt[18], pkt[19]);
+    let src_port = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
+    let dst_port = u16::from_be_bytes([pkt[ihl + 2], pkt[ihl + 3]]);
+    Some((src_ip, src_port, dst_ip, dst_port))
+}
+
+// ──────────────────────────── smoltcp Device ────────────────────────────
+
+struct TunRx {
+    data: Vec<u8>,
+}
+
+impl RxToken for TunRx {
+    fn consume<R, F>(self, f: F) -> R
+    where
+        F: FnOnce(&[u8]) -> R,
+    {
+        f(&self.data)
     }
 }
 
+struct TunTx {
+    fd: RawFd,
+    flows: FlowMap,
+}
+
+impl TxToken for TunTx {
+    fn consume<R, F>(self, len: usize, f: F) -> R
+    where
+        F: FnOnce(&mut [u8]) -> R,
+    {
+        let mut buf = vec![0u8; len];
+        let result = f(&mut buf);
+        // Rewrite src back to original dst so the client accepts the packet.
+        if let Some((_sip, _sp, dip, dp)) = parse_ipv4_tcp(&buf) {
+            let orig = self.flows.borrow().get(&(dip, dp)).copied();
+            if let Some((orig_ip, _orig_port)) = orig {
+                rewrite_src(&mut buf, orig_ip);
+            }
+        }
+        unsafe {
+            libc::write(self.fd, buf.as_ptr() as *const libc::c_void, buf.len());
+        }
+        result
+    }
+}
+
+struct TunDev {
+    fd: RawFd,
+    flows: FlowMap,
+}
+
+impl Device for TunDev {
+    type RxToken<'a> = TunRx;
+    type TxToken<'a> = TunTx;
+
+    fn receive(
+        &mut self,
+        _ts: SmolInstant,
+    ) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
+        let mut buf = vec![0u8; MTU];
+        let n = unsafe {
+            libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
+        };
+        if n <= 0 {
+            return None;
+        }
+        buf.truncate(n as usize);
+
+        // Track original dst and rewrite for smoltcp.
+        if let Some((sip, sp, dip, dp)) = parse_ipv4_tcp(&buf) {
+            self.flows.borrow_mut().insert((sip, sp), (dip, dp));
+            rewrite_dst(&mut buf, TUN_IP);
+        }
+
+        Some((
+            TunRx { data: buf },
+            TunTx {
+                fd: self.fd,
+                flows: self.flows.clone(),
+            },
+        ))
+    }
+
+    fn transmit(&mut self, _ts: SmolInstant) -> Option<Self::TxToken<'_>> {
+        Some(TunTx {
+            fd: self.fd,
+            flows: self.flows.clone(),
+        })
+    }
+
+    fn capabilities(&self) -> DeviceCapabilities {
+        let mut caps = DeviceCapabilities::default();
+        caps.max_transmission_unit = MTU;
+        caps.medium = Medium::Ip;
+        caps
+    }
+}
+
+// ──────────────────────────── connection bridge ────────────────────────────
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Route {
-    HttpProxy,
-    ConnectProxy,
+enum Kind {
+    Http,
+    Connect,
     Direct,
 }
 
-struct FlowState {
-    route: Route,
-    first: bool,
+struct Conn {
+    kind: Kind,
+    orig_dst: Ipv4Address,
+    orig_port: u16,
+    proxy: Option<TcpStream>,
+    to_upstream: Vec<u8>,
+    from_upstream: Vec<u8>,
+    connect_sent: bool,
+    connect_done: bool,
 }
 
-/// Parse a minimal IPv4+TCP packet. Returns (src_port, dst_port, is_syn, payload_offset).
-fn parse_tcp_packet(pkt: &[u8]) -> Option<(u16, u16, bool, usize)> {
-    if pkt.len() < 40 {
-        return None;
-    }
-    // IPv4
-    let ihl = (pkt[0] & 0x0f) as usize * 4;
-    if pkt[0] >> 4 != 4 || pkt.len() < ihl + 20 {
-        return None;
-    }
-    let protocol = pkt[9];
-    if protocol != 6 {
-        // Not TCP
-        return None;
-    }
-    let tcp = &pkt[ihl..];
-    let src_port = u16::from_be_bytes([tcp[0], tcp[1]]);
-    let dst_port = u16::from_be_bytes([tcp[2], tcp[3]]);
-    let data_off = ((tcp[12] >> 4) as usize) * 4;
-    let flags = tcp[13];
-    let syn = flags & 0x02 != 0;
-    let payload_off = if data_off > 0 && tcp.len() > data_off {
-        ihl + data_off
-    } else {
-        0
-    };
-    Some((src_port, dst_port, syn, payload_off))
-}
-
-/// Handle a flow: forward data to proxy or DIRECT.
-async fn handle_flow(route: Route, proxy: &str, dst_port: u16, data: &[u8]) -> Result<()> {
-    match route {
-        Route::HttpProxy | Route::ConnectProxy => {
-            // Try the local proxy first.
-            match tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(proxy)).await {
-                Ok(Ok(mut upstream)) => {
-                    let _ = upstream.set_nodelay(true);
-                    // For HTTP: rewrite to absolute-form and inject marker.
-                    // For CONNECT: send CONNECT then splice.
-                    if route == Route::HttpProxy {
-                        let marked = inject_marker_http(data);
-                        upstream.write_all(&marked).await?;
-                    } else {
-                        // CONNECT: build the handshake from the first payload.
-                        // The TUN stack sees raw TCP — we emulate a proxy client.
-                        let host = extract_host(data).unwrap_or_else(|| "unknown".into());
-                        let connect = format!(
-                            "CONNECT {host}:{dst_port} HTTP/1.1\r\nHost: {host}:{dst_port}\r\nConnection: close\r\n\r\n"
-                        );
-                        upstream.write_all(connect.as_bytes()).await?;
-                        // Forward client data after CONNECT handshake.
-                        upstream.write_all(data).await?;
-                    }
-                    upstream.flush().await?;
-                    // Drain response (we can't easily send it back through TUN in MVP).
-                    let mut buf = vec![0u8; 4096];
-                    let _ = tokio::time::timeout(Duration::from_secs(10), upstream.read(&mut buf))
-                        .await;
-                    Ok(())
-                }
-                _ => {
-                    // Proxy down — DIRECT fail-open.
-                    let host = extract_host(data).unwrap_or_else(|| "127.0.0.1".into());
-                    direct_fetch(&host, dst_port, data).await
-                }
-            }
-        }
-        Route::Direct => {
-            let host = extract_host(data).unwrap_or_else(|| "127.0.0.1".into());
-            direct_fetch(&host, dst_port, data).await
-        }
-    }
-}
-
-/// Inject the client marker into an HTTP request (absolute-form preserved).
-fn inject_marker_http(data: &[u8]) -> Vec<u8> {
+/// Insert client marker into an HTTP request that is already in absolute-form.
+#[allow(dead_code)]
+fn mark_http(data: &[u8]) -> Vec<u8> {
     crate::proxy::http_parse::inject_client_marker(data)
 }
 
-/// Extract Host header from HTTP request bytes.
-fn extract_host(data: &[u8]) -> Option<String> {
+/// Rewrite origin-form to absolute-form + marker.
+fn origin_to_absolute(data: &[u8], host: &str, port: u16) -> Vec<u8> {
     let text = String::from_utf8_lossy(data);
-    for line in text.lines() {
-        if let Some((k, v)) = line.split_once(':') {
-            if k.trim().eq_ignore_ascii_case("host") {
-                return Some(v.trim().to_string());
+    let mut lines = text.split("\r\n");
+    let request_line = lines.next().unwrap_or("");
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("GET");
+    let path = parts.next().unwrap_or("/");
+    let version = parts.next().unwrap_or("HTTP/1.1");
+
+    let abs_path = if path.starts_with("http://") || path.starts_with("https://") {
+        path.to_string()
+    } else if port == 80 {
+        format!("http://{host}{path}")
+    } else {
+        format!("http://{host}:{port}{path}")
+    };
+
+    let mut out = format!("{method} {abs_path} {version}\r\n");
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        if let Some((k, _)) = line.split_once(':') {
+            if k.trim().eq_ignore_ascii_case("proxy-connection") {
+                continue;
             }
         }
+        out.push_str(line);
+        out.push_str("\r\n");
     }
-    None
+    out.push_str("X-RustCache-Client: 1\r\nConnection: close\r\n\r\n");
+    out.into_bytes()
 }
 
-/// Direct fetch to origin (fail-open path).
-async fn direct_fetch(host: &str, port: u16, data: &[u8]) -> Result<()> {
-    let addr = format!("{host}:{port}");
-    let mut upstream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(&addr))
-        .await
-        .context("direct connect timeout")?
-        .with_context(|| format!("connect {addr}"))?;
-    let _ = upstream.set_nodelay(true);
-    upstream.write_all(data).await?;
-    upstream.flush().await?;
-    let mut buf = vec![0u8; 4096];
-    let _ = tokio::time::timeout(Duration::from_secs(5), upstream.read(&mut buf)).await;
+/// IP address to string without IPv6 concerns (we only handle IPv4 here).
+fn ip_str(ip: Ipv4Address) -> String {
+    let o = ip.octets();
+    format!("{}.{}.{}.{}", o[0], o[1], o[2], o[3])
+}
+
+// ──────────────────────────── event loop ────────────────────────────
+
+/// Run the TUN TCP stack (blocking; call from `spawn_blocking`).
+pub fn event_loop(local_proxy: &str) -> Result<()> {
+    // 1. Create TUN device (sync — we're in spawn_blocking).
+    let mut config = tun::Configuration::default();
+    config
+        .tun_name("rustcache-tun0")
+        .address("198.18.0.1")
+        .netmask("255.255.0.0")
+        .up();
+    let tun_dev = tun::create(&config).context("create TUN device")?;
+    let fd = tun_dev.as_raw_fd();
+
+    // 2. Add capture routes (device exists now).
+    for route in ["0.0.0.0/1", "128.0.0.0/1"] {
+        let out = std::process::Command::new("ip")
+            .args(["route", "add", route, "dev", "rustcache-tun0"])
+            .output();
+        match out {
+            Ok(o) if o.status.success() => {}
+            Ok(o) => tracing::warn!(
+                route,
+                stderr = %String::from_utf8_lossy(&o.stderr),
+                "route add failed (may already exist)"
+            ),
+            Err(e) => tracing::warn!(route, error = %e, "route add failed"),
+        }
+    }
+
+    // Prevent tun_dev from closing the fd — TunDev owns it now.
+    std::mem::forget(tun_dev);
+
+    let flows: FlowMap = Rc::new(RefCell::new(HashMap::new()));
+    let mut device = TunDev {
+        fd,
+        flows: flows.clone(),
+    };
+
+    // smoltcp interface
+    let mut iface = Interface::new(
+        Config::new(HardwareAddress::Ip),
+        &mut device,
+        SmolInstant::now(),
+    );
+    iface.update_ip_addrs(|addrs| {
+        let o = TUN_IP.octets();
+        let _ = addrs.push(IpCidr::new(
+            IpAddress::v4(o[0], o[1], o[2], o[3]),
+            TUN_PREFIX,
+        ));
+    });
+
+    // Socket set: listeners for :80 and :443 + connection sockets
+    let mut sockets = SocketSet::new(vec![]);
+    let mut listeners_80: Vec<SocketHandle> = Vec::new();
+    let mut listeners_443: Vec<SocketHandle> = Vec::new();
+
+    for _ in 0..MAX_LISTENERS_PER_PORT {
+        let rx = tcp::SocketBuffer::new(vec![0; SOCK_BUF]);
+        let tx = tcp::SocketBuffer::new(vec![0; SOCK_BUF]);
+        let mut s = tcp::Socket::new(rx, tx);
+        s.listen(80).context("listen :80")?;
+        listeners_80.push(sockets.add(s));
+    }
+    for _ in 0..MAX_LISTENERS_PER_PORT {
+        let rx = tcp::SocketBuffer::new(vec![0; SOCK_BUF]);
+        let tx = tcp::SocketBuffer::new(vec![0; SOCK_BUF]);
+        let mut s = tcp::Socket::new(rx, tx);
+        s.listen(443).context("listen :443")?;
+        listeners_443.push(sockets.add(s));
+    }
+
+    // Active connections
+    let mut conns: HashMap<SocketHandle, Conn> = HashMap::new();
+
+    loop {
+        let ts = SmolInstant::now();
+        iface.poll(ts, &mut device, &mut sockets);
+
+        // ── detect new connections from listeners ──
+        for (handle, kind) in listeners_80
+            .iter()
+            .map(|h| (*h, Kind::Http))
+            .chain(listeners_443.iter().map(|h| (*h, Kind::Connect)))
+        {
+            if conns.contains_key(&handle) {
+                continue;
+            }
+            let sock = sockets.get_mut::<tcp::Socket>(handle);
+            if !sock.is_active() {
+                continue;
+            }
+            let remote = match sock.remote_endpoint() {
+                Some(r) => r,
+                None => continue,
+            };
+            let (client_ip, client_port) = match remote.addr {
+                IpAddress::Ipv4(a) => (a, remote.port),
+                #[allow(unreachable_patterns)]
+                _ => continue,
+            };
+            let (orig_ip, orig_port) = flows
+                .borrow()
+                .get(&(client_ip, client_port))
+                .copied()
+                .unwrap_or((TUN_IP, if kind == Kind::Http { 80 } else { 443 }));
+
+            // Connect to local proxy (or DIRECT for non-80/443).
+            let proxy = if kind == Kind::Direct {
+                TcpStream::connect((ip_str(orig_ip).as_str(), orig_port)).ok()
+            } else {
+                TcpStream::connect(local_proxy).ok()
+            };
+
+            conns.insert(
+                handle,
+                Conn {
+                    kind,
+                    orig_dst: orig_ip,
+                    orig_port,
+                    proxy,
+                    to_upstream: Vec::new(),
+                    from_upstream: Vec::new(),
+                    connect_sent: false,
+                    connect_done: false,
+                },
+            );
+        }
+
+        // ── pump data ──
+        let mut dead: Vec<SocketHandle> = Vec::new();
+        for (handle, conn) in conns.iter_mut() {
+            let sock = sockets.get_mut::<tcp::Socket>(*handle);
+
+            // smoltcp → upstream buffer
+            if sock.may_recv() {
+                let _ = sock.recv(|data| {
+                    if !data.is_empty() {
+                        conn.to_upstream.extend_from_slice(data);
+                    }
+                    (data.len(), ())
+                });
+            }
+
+            // Prepare upstream data depending on kind
+            if !conn.to_upstream.is_empty() {
+                match conn.kind {
+                    Kind::Http => {
+                        // Rewrite origin-form → absolute-form + marker.
+                        let host = ip_str(conn.orig_dst);
+                        let rewritten =
+                            origin_to_absolute(&conn.to_upstream, &host, conn.orig_port);
+                        conn.to_upstream.clear();
+                        if let Some(ref mut p) = conn.proxy {
+                            let _ = p.write_all(&rewritten);
+                            let _ = p.flush();
+                        }
+                    }
+                    Kind::Connect => {
+                        if !conn.connect_sent {
+                            let host = ip_str(conn.orig_dst);
+                            let connect = format!(
+                                "CONNECT {host}:{} HTTP/1.1\r\nHost: {host}:{}\r\nConnection: close\r\n\r\n",
+                                conn.orig_port, conn.orig_port
+                            );
+                            if let Some(ref mut p) = conn.proxy {
+                                let _ = p.write_all(connect.as_bytes());
+                                let _ = p.flush();
+                            }
+                            conn.connect_sent = true;
+                        } else {
+                            if let Some(ref mut p) = conn.proxy {
+                                let _ = p.write_all(&conn.to_upstream);
+                                let _ = p.flush();
+                            }
+                            conn.to_upstream.clear();
+                        }
+                    }
+                    Kind::Direct => {
+                        if let Some(ref mut p) = conn.proxy {
+                            let _ = p.write_all(&conn.to_upstream);
+                            let _ = p.flush();
+                        }
+                        conn.to_upstream.clear();
+                    }
+                }
+            }
+
+            // upstream → smoltcp buffer
+            if let Some(ref mut p) = conn.proxy {
+                let _ = p.set_nonblocking(true);
+                let mut buf = [0u8; SOCK_BUF];
+                loop {
+                    match p.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            // For CONNECT: first response is "200 Connection Established"
+                            if conn.kind == Kind::Connect && !conn.connect_done {
+                                conn.from_upstream.extend_from_slice(&buf[..n]);
+                                // Check if we got the full CONNECT response.
+                                if conn
+                                    .from_upstream
+                                    .windows(4)
+                                    .any(|w| w == b"\r\n\r\n")
+                                {
+                                    conn.connect_done = true;
+                                    // Skip the CONNECT response — client expects raw TLS.
+                                    conn.from_upstream.clear();
+                                }
+                                break;
+                            }
+                            conn.from_upstream.extend_from_slice(&buf[..n]);
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(_) => break,
+                    }
+                }
+                let _ = p.set_nonblocking(false);
+            }
+
+            // smoltcp ← upstream buffer
+            if sock.can_send() && !conn.from_upstream.is_empty() {
+                let n = conn.from_upstream.len().min(SOCK_BUF);
+                let _ = sock.send_slice(&conn.from_upstream[..n]);
+                conn.from_upstream.drain(..n);
+            }
+
+            // Detect close
+            if !sock.is_active() {
+                dead.push(*handle);
+            }
+        }
+
+        // ── cleanup dead connections ──
+        for handle in dead {
+            conns.remove(&handle);
+            let sock = sockets.get_mut::<tcp::Socket>(handle);
+            // Re-arm listener.
+            let port = sock.local_endpoint().map(|e| e.port).unwrap_or(80);
+            let _ = sock.listen(port);
+        }
+
+        // Sleep until smoltcp has work or 5 ms passes.
+        let delay = iface
+            .poll_delay(ts, &sockets)
+            .unwrap_or_else(|| smoltcp::time::Duration::from_millis(5));
+        let ms = delay.total_millis().clamp(1, 50) as u64;
+        std::thread::sleep(Duration::from_millis(ms));
+    }
+}
+
+/// Async entry point: spawn the blocking event loop and keep it alive.
+pub async fn run(local_proxy: &str) -> Result<()> {
+    let proxy = local_proxy.to_string();
+    let handle = tokio::task::spawn_blocking(move || {
+        if let Err(e) = event_loop(&proxy) {
+            tracing::error!(error = %e, "tun stack stopped");
+        }
+    });
+    // Keep the task alive (TunSession._task holds the JoinHandle).
+    let _ = handle.await;
     Ok(())
 }
 
-/// Open the platform TUN device for reading/writing packets.
-async fn open_tun() -> Result<Box<dyn TunDevice>> {
-    #[cfg(target_os = "linux")]
-    {
-        linux_open_tun().await
-    }
-    #[cfg(target_os = "macos")]
-    {
-        macos_open_tun().await
-    }
-    #[cfg(target_os = "windows")]
-    {
-        windows_open_tun().await
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        anyhow::bail!("TUN not supported on this platform")
-    }
-}
-
-/// Trait for reading/writing raw IP packets on a TUN device.
-pub trait TunDevice: Send {
-    fn read<'a>(
-        &'a mut self,
-        buf: &'a mut [u8],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send + 'a>>;
-}
-
-#[cfg(target_os = "linux")]
-async fn linux_open_tun() -> Result<Box<dyn TunDevice>> {
-    struct LinuxTun {
-        file: std::fs::File,
-    }
-    impl TunDevice for LinuxTun {
-        fn read<'a>(
-            &'a mut self,
-            buf: &'a mut [u8],
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<usize>> + Send + 'a>>
-        {
-            Box::pin(async move {
-                use std::io::Read;
-                self.file.read(buf).context("tun read")
-            })
-        }
-    }
-
-    // Open /dev/net/tun via the `tun` crate.
-    let mut config = tun::Configuration::default();
-    config
-        .address(crate::tun::TUN_ADDR)
-        .netmask("255.255.0.0")
-        .up();
-    let dev = tun::create_as_async(&config).context("create TUN device")?;
-    // Wrap as raw fd for reading.
-    let fd = dev.as_raw_fd();
-    let file = unsafe { std::fs::File::from_raw_fd(fd) };
-    Ok(Box::new(LinuxTun { file }))
-}
-
-#[cfg(target_os = "macos")]
-async fn macos_open_tun() -> Result<Box<dyn TunDevice>> {
-    anyhow::bail!("TUN on macOS is best-effort and not yet implemented")
-}
-
-#[cfg(target_os = "windows")]
-async fn windows_open_tun() -> Result<Box<dyn TunDevice>> {
-    anyhow::bail!("TUN on Windows requires wintun.dll — not yet implemented")
-}
-
-// Re-export for tun crate raw fd access on Linux.
-#[cfg(target_os = "linux")]
-use std::os::unix::io::{AsRawFd, FromRawFd};
+// Silence unused-import warnings for types used only in cfg branches.
+#[allow(unused_imports)]
+use std::os::unix::io::AsRawFd as _AsRawFd;

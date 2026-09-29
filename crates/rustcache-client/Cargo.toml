@@ -13,7 +13,7 @@ path = "src/main.rs"
 [features]
 default = []
 gui = ["dep:eframe", "dep:egui", "dep:tray-icon", "dep:image"]
-tun = ["dep:tun", "dep:smoltcp", "dep:nix"]
+tun = ["dep:tun", "dep:smoltcp", "dep:nix", "dep:libc"]
 
 [dependencies]
 anyhow.workspace = true
@@ -39,6 +39,7 @@ image = { version = "0.25", optional = true, default-features = false, features 
 tun = { version = "0.7", optional = true, features = ["async"] }
 smoltcp = { version = "0.12", optional = true, default-features = false, features = ["std", "medium-ip", "proto-ipv4", "socket-tcp", "socket-udp"] }
 nix = { version = "0.29", optional = true, features = ["net"] }
+libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

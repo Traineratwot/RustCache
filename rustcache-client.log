@@ -1,4 +1,10 @@
-[2m2026-09-29T20:13:27.430461Z[0m [33m WARN[0m recovered dirty system-proxy state [3mmsg[0m[2m=[0mgnome proxy restored
-[2m2026-09-29T20:13:27.430981Z[0m [32m INFO[0m discovered RustCache [3mapi[0m[2m=[0mhttp://127.0.0.1:8080 [3mhttp[0m[2m=[0m3128 [3mhttps[0m[2m=[0m3129
-[2m2026-09-29T20:13:27.431003Z[0m [32m INFO[0m rustcache-client GUI running [3mhost[0m[2m=[0m127.0.0.1 [3mport[0m[2m=[0m31280 [3mmode[0m[2m=[0mOff
-[2m2026-09-29T20:13:27.431112Z[0m [32m INFO[0m client proxy listening [3mlocal[0m[2m=[0m127.0.0.1:31280
+[2m2026-09-29T20:46:15.303278Z[0m [33m WARN[0m recovered dirty system-proxy state [3mmsg[0m[2m=[0mkde proxy restored
+[2m2026-09-29T20:46:15.303810Z[0m [32m INFO[0m discovered RustCache [3mapi[0m[2m=[0mhttp://127.0.0.1:8080 [3mhttp[0m[2m=[0m3128 [3mhttps[0m[2m=[0m3129
+[2m2026-09-29T20:46:15.303941Z[0m [31mERROR[0m tun stack stopped [3merror[0m[2m=[0mcreate TUN device
+[2m2026-09-29T20:46:15.608571Z[0m [33m WARN[0m DNS route add failed [3mdns[0m[2m=[0m127.0.0.53 [3mstderr[0m[2m=[0mRTNETLINK answers: Operation not permitted
+
+[2m2026-09-29T20:46:15.608698Z[0m [32m INFO[0m rustcache-client GUI running [3mhost[0m[2m=[0m127.0.0.1 [3mport[0m[2m=[0m31280 [3mmode[0m[2m=[0mTun
+[2m2026-09-29T20:46:15.608955Z[0m [32m INFO[0m client proxy listening [3mlocal[0m[2m=[0m127.0.0.1:31280
+[2m2026-09-29T20:46:19.518777Z[0m [31mERROR[0m tun stack stopped [3merror[0m[2m=[0mcreate TUN device
+[2m2026-09-29T20:46:19.821220Z[0m [33m WARN[0m DNS route add failed [3mdns[0m[2m=[0m127.0.0.53 [3mstderr[0m[2m=[0mRTNETLINK answers: Operation not permitted
+
