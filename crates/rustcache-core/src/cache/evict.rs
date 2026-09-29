@@ -54,7 +54,7 @@ mod tests {
                 expires_at: Some(now_ms() + 60_000),
                 cacheable: true,
             };
-            disk.store(meta.clone(), &vec![0u8; 100]).await.unwrap();
+            disk.store(meta.clone(), &[0u8; 100]).await.unwrap();
             // store overwrites last_access — rewrite meta to keep LRU order
             meta.last_access = now_ms() - (3 - i) * 10_000;
             let path_json = serde_json::to_vec(&meta).unwrap();

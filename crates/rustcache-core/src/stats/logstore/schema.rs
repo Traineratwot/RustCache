@@ -5,19 +5,33 @@ use std::path::Path;
 use rusqlite::Connection;
 
 /// Restrict the database file to owner-only access (0600) on unix.
+///
+/// Covers the WAL sidecars too: `logs.db-wal` holds committed rows that have
+/// not been checkpointed yet, so leaving it world-readable would defeat the
+/// mode on `logs.db` itself.
 pub(super) fn set_db_mode(path: &Path) {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = std::fs::metadata(path) {
-            let mut perms = meta.permissions();
-            perms.set_mode(0o600);
-            let _ = std::fs::set_permissions(path, perms);
+        chmod_600(path);
+        for suffix in ["-wal", "-shm"] {
+            let mut name = path.as_os_str().to_os_string();
+            name.push(suffix);
+            chmod_600(Path::new(&name));
         }
     }
     #[cfg(not(unix))]
     {
         let _ = path;
+    }
+}
+
+#[cfg(unix)]
+fn chmod_600(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mut perms = meta.permissions();
+        perms.set_mode(0o600);
+        let _ = std::fs::set_permissions(path, perms);
     }
 }
 

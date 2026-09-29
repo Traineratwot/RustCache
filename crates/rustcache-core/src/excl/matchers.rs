@@ -155,12 +155,27 @@ impl ExclusionSet {
     }
 }
 
+/// Host part of a URL, without scheme, port, userinfo or IPv6 brackets.
+///
+/// The brackets matter: `https://[::1]/` must yield `::1`, otherwise the CIDR
+/// matchers never see a parsable address and IPv6 exclusions silently never fire.
 fn extract_host(url: &str) -> String {
     let rest = match url.split_once("://") {
         Some((_, r)) => r,
         None => url,
     };
-    let authority = rest.split(['/', '?']).next().unwrap_or(rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    // Strip userinfo (`user:pass@host`) before looking for the port.
+    let authority = match authority.rsplit_once('@') {
+        Some((_, h)) => h,
+        None => authority,
+    };
+    if let Some(inner) = authority.strip_prefix('[') {
+        // IPv6 literal: everything up to the closing bracket is the host.
+        if let Some((host, _port)) = inner.split_once(']') {
+            return host.to_ascii_lowercase();
+        }
+    }
     match authority.rsplit_once(':') {
         Some((h, p)) if !h.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => {
             h.to_ascii_lowercase()
@@ -218,6 +233,21 @@ mod tests {
         assert!(!s.is_excluded("evil-local", None));
         assert!(!s.is_excluded("10.0.0.1", None));
         assert!(!s.is_excluded_url("http://example.org/"));
+    }
+
+    #[test]
+    fn ipv6_literal_url_matches_cidr() {
+        let s = ExclusionSet::from_specs(&[], &["fd00::/8".into()]);
+        assert!(s.is_excluded_url("https://[fd00::1]:8443/x"));
+        assert!(s.is_excluded_url("http://[fd00::2]/"));
+        assert!(!s.is_excluded_url("http://[2001:db8::1]/"));
+    }
+
+    #[test]
+    fn userinfo_is_not_mistaken_for_the_host() {
+        let s = ExclusionSet::from_specs(&["bank.example".into()], &[]);
+        assert!(s.is_excluded_url("https://user:pw@bank.example/login"));
+        assert!(!s.is_excluded_url("https://bank.example@other.test/"));
     }
 
     #[test]

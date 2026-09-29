@@ -71,19 +71,11 @@ pub fn canonical_url(url: &str) -> String {
     };
 
     let path_and_query = path_and_query.split('#').next().unwrap_or("");
-    let path_and_query = if path_and_query.is_empty() {
-        "/"
-    } else if path_and_query.starts_with('?') {
-        // path empty, query only
-        &format!("/{path_and_query}")[1..] // keep as-is with leading ? — normalize to /?...
-    } else {
-        path_and_query
-    };
-
-    if let Some(q) = path_and_query.strip_prefix('?') {
-        format!("{scheme}://{authority}/?{q}")
-    } else {
-        format!("{scheme}://{authority}{path_and_query}")
+    match path_and_query.strip_prefix('?') {
+        // Query-only target: normalize the empty path to `/`.
+        Some(q) => format!("{scheme}://{authority}/?{q}"),
+        None if path_and_query.is_empty() => format!("{scheme}://{authority}/"),
+        None => format!("{scheme}://{authority}{path_and_query}"),
     }
 }
 

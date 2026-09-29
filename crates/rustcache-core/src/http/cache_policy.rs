@@ -4,6 +4,9 @@ use std::time::Duration;
 
 use crate::cache::meta::CacheMeta;
 
+/// Freshness granted to a bare `Cache-Control: immutable` (no `max-age`): one year.
+const IMMUTABLE_TTL_MS: u64 = 365 * 24 * 3600 * 1000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheDecision {
     StoreAndCache,
@@ -32,12 +35,11 @@ impl CachePolicy {
     pub fn from_headers(status: u16, headers: &[(String, String)]) -> Self {
         let mut p = CachePolicy::default();
         let mut date_ms: Option<u64> = None;
-        let mut max_age_header: Option<u64> = None;
 
         for (name, value) in headers {
             let n = name.to_ascii_lowercase();
             match n.as_str() {
-                "cache-control" => parse_cache_control(value, &mut p, &mut max_age_header),
+                "cache-control" => parse_cache_control(value, &mut p),
                 "expires" => p.expires_at = parse_http_date(value),
                 "date" => date_ms = parse_http_date(value),
                 "etag" => p.etag = Some(value.clone()),
@@ -61,13 +63,17 @@ impl CachePolicy {
             }
         }
 
-        if let Some(ma) = p.s_maxage.or(p.max_age).or(max_age_header) {
+        // `max-age` wins over `Expires`. It must still be honored when
+        // `immutable` is present — `Cache-Control: max-age=31536000, immutable`
+        // is the common form, and skipping it left the entry with no expiry at
+        // all, i.e. stale on every request.
+        if let Some(ma) = p.s_maxage.or(p.max_age) {
             let base = date_ms.unwrap_or_else(now_secs_ms);
-            if !p.immutable {
-                p.expires_at = Some(base + ma * 1000);
-            }
+            p.expires_at = Some(base + ma.saturating_mul(1000));
         } else if p.immutable {
-            p.expires_at = Some(now_secs_ms() + 365 * 24 * 3600 * 1000);
+            // Bare `immutable` with no max-age: the body is promised never to
+            // change, so pick a long freshness window.
+            p.expires_at = Some(now_secs_ms() + IMMUTABLE_TTL_MS);
         }
 
         // Default heuristic freshness for 200 with Last-Modified (10% of age).
@@ -131,7 +137,7 @@ impl CachePolicy {
     }
 }
 
-fn parse_cache_control(value: &str, p: &mut CachePolicy, max_age_header: &mut Option<u64>) {
+fn parse_cache_control(value: &str, p: &mut CachePolicy) {
     for part in value.split(',') {
         let part = part.trim();
         if part.is_empty() {
@@ -154,7 +160,6 @@ fn parse_cache_control(value: &str, p: &mut CachePolicy, max_age_header: &mut Op
             "max-age" => {
                 if let Some(v) = val.and_then(|v| v.parse::<u64>().ok()) {
                     p.max_age = Some(v);
-                    *max_age_header = Some(v);
                 }
             }
             "s-maxage" => {
@@ -331,6 +336,17 @@ mod tests {
             CachePolicy::from_headers(200, &h(&[("cache-control", "max-age=60, must-revalidate")]));
         assert!(p.must_revalidate);
         assert_eq!(p.decide(true), CacheDecision::StoreButRevalidate);
+    }
+
+    #[test]
+    fn immutable_with_max_age_keeps_max_age() {
+        // Regression: `immutable` used to suppress max-age entirely, leaving the
+        // entry with no expiry and revalidating on every request.
+        let p =
+            CachePolicy::from_headers(200, &h(&[("cache-control", "max-age=31536000, immutable")]));
+        assert_eq!(p.decide(true), CacheDecision::StoreAndCache);
+        let ttl = p.ttl().expect("immutable+max-age must be fresh").as_secs();
+        assert!(ttl > 31_000_000, "ttl={ttl}");
     }
 
     #[test]

@@ -161,12 +161,14 @@ async fn pac_mode_http_only() {
     let ca_dir = std::env::temp_dir().join(format!("rc-pac-ca2-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&ca_dir);
     let ca = generate_ca(&ca_dir).unwrap();
-    let mut cfg = Config::default();
-    cfg.pac = PacConfig {
-        enabled: true,
-        bind: "0.0.0.0:8081".into(),
-        mode: PacMode::Http,
-        ..Default::default()
+    let cfg = Config {
+        pac: PacConfig {
+            enabled: true,
+            bind: "0.0.0.0:8081".into(),
+            mode: PacMode::Http,
+            ..Default::default()
+        },
+        ..Config::default()
     };
     let state = ApiState {
         engine,
@@ -186,10 +188,12 @@ async fn preferred_ip_overrides_host_header() {
     install_crypto();
     let (engine, dir) = spawn_engine(ExclusionSet::default()).await;
     let ca = generate_ca(dir.join("ca")).unwrap();
-    let mut cfg = Config::default();
-    cfg.pac = PacConfig {
-        preferred_ip: "10.9.9.9".into(),
-        ..Default::default()
+    let cfg = Config {
+        pac: PacConfig {
+            preferred_ip: "10.9.9.9".into(),
+            ..Default::default()
+        },
+        ..Config::default()
     };
     let state = ApiState {
         engine,
@@ -212,10 +216,12 @@ async fn pac_info_lists_preferred_ip_first() {
     install_crypto();
     let (engine, dir) = spawn_engine(ExclusionSet::default()).await;
     let ca = generate_ca(dir.join("ca")).unwrap();
-    let mut cfg = Config::default();
-    cfg.pac = PacConfig {
-        preferred_ip: "10.9.9.9".into(),
-        ..Default::default()
+    let cfg = Config {
+        pac: PacConfig {
+            preferred_ip: "10.9.9.9".into(),
+            ..Default::default()
+        },
+        ..Config::default()
     };
     let state = ApiState {
         engine,

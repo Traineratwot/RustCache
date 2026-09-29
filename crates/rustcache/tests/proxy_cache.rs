@@ -122,6 +122,75 @@ async fn max_age_expiry_revalidate_304_hit_revalidated() {
 }
 
 #[tokio::test]
+async fn revalidation_restores_freshness_instead_of_staying_stale() {
+    install_crypto();
+    // Regression: a 304 used to re-derive freshness from the *stored* headers.
+    // `max-age` counts from the response `Date`, so replaying the stored Date
+    // put the "refreshed" entry right back in the past — and every later
+    // request became another conditional round-trip to the origin.
+    let origin_state = OriginState::new("v1", "max-age=600");
+    *origin_state.etag.write().unwrap() = Some("\"e1\"".into());
+    // An origin that dates its responses, and a Date old enough that the
+    // stored max-age window has long since elapsed.
+    *origin_state.date.write().unwrap() = Some("Wed, 21 Oct 2015 07:28:00 GMT".into());
+    let origin = spawn_origin(origin_state.clone()).await;
+    let (engine, dir) = spawn_engine(ExclusionSet::default()).await;
+    engine.set_optimistic(false);
+    let proxy = spawn_http_proxy(engine.clone()).await;
+
+    let url = format!("http://127.0.0.1:{}/reval-fresh", origin.port());
+    let (s1, _) = proxy_get(proxy, &url).await.unwrap();
+    assert_eq!(s1, 200);
+    assert_eq!(origin_state.hits(), 1);
+
+    // Stale on arrival (Date + max-age is in the past) → conditional request.
+    let (s2, b2) = proxy_get(proxy, &url).await.unwrap();
+    assert_eq!(s2, 200);
+    assert_eq!(b2, b"v1");
+    assert_eq!(origin_state.hits(), 2, "stale entry revalidates once");
+    let reqs = origin_state.requests.read().unwrap().clone();
+    assert_eq!(reqs[1].2.as_deref(), Some("\"e1\""), "If-None-Match sent");
+    drop(reqs);
+
+    // The 304 carried no Date, so freshness restarts now — this must be a hit.
+    let (s3, b3) = proxy_get(proxy, &url).await.unwrap();
+    assert_eq!(s3, 200);
+    assert_eq!(b3, b"v1");
+    assert_eq!(
+        origin_state.hits(),
+        2,
+        "revalidated entry must be fresh again, not re-checked every request"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn no_cache_revalidates_on_every_request() {
+    install_crypto();
+    // The freshness floor applied after a 304 must not override an origin that
+    // explicitly asked to be consulted every time.
+    let origin_state = OriginState::new("v1", "no-cache");
+    *origin_state.etag.write().unwrap() = Some("\"e1\"".into());
+    let origin = spawn_origin(origin_state.clone()).await;
+    let (engine, dir) = spawn_engine(ExclusionSet::default()).await;
+    engine.set_optimistic(false);
+    let proxy = spawn_http_proxy(engine.clone()).await;
+
+    let url = format!("http://127.0.0.1:{}/no-cache", origin.port());
+    for expected_hits in 1..=3 {
+        let (status, body) = proxy_get(proxy, &url).await.unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(body, b"v1");
+        assert_eq!(
+            origin_state.hits(),
+            expected_hits,
+            "no-cache must reach the origin on every request"
+        );
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
 async fn no_store_never_cached() {
     install_crypto();
     let origin_state = OriginState::new("secret", "no-store");

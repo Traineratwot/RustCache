@@ -1,6 +1,7 @@
 //! REST API: shared state, error type, handlers, PAC generation, routes.
 
 pub mod error;
+pub mod guard;
 pub mod handlers;
 pub mod pac;
 pub mod routes;

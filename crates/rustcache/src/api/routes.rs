@@ -3,6 +3,7 @@
 use axum::Router;
 use axum::routing::{get, post};
 
+use super::guard::local_origin_guard;
 use super::handlers;
 use super::state::ApiState;
 
@@ -44,6 +45,11 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/pac", get(handlers::pac::pac_info))
         .route("/proxy.pac", get(handlers::pac::proxy_pac))
         .route("/wpad.dat", get(handlers::pac::proxy_pac))
+        // Rejects cross-site and DNS-rebound requests — see `super::guard`.
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            local_origin_guard,
+        ))
         .with_state(state)
 }
 

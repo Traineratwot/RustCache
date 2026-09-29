@@ -6,6 +6,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::engine::SharedEngine;
+use crate::listeners::{CONNECT_TIMEOUT, HANDSHAKE_TIMEOUT};
 use rustcache_core::stats::{Outcome, ReqRecord};
 
 const VER: u8 = 0x05;
@@ -36,8 +37,83 @@ pub async fn serve_connection(stream: TcpStream, engine: SharedEngine) -> anyhow
     handle(stream, engine).await
 }
 
+/// A negotiated CONNECT request: where to dial and how to label it in the log.
+struct Socks5Target {
+    addr: std::net::SocketAddr,
+    label: String,
+}
+
 async fn handle(mut client: TcpStream, engine: SharedEngine) -> anyhow::Result<()> {
     let started = Instant::now();
+
+    // Only the negotiation is time-boxed. The tunnel that follows is
+    // deliberately unbounded — long-lived connections are the whole point.
+    let negotiated =
+        match tokio::time::timeout(HANDSHAKE_TIMEOUT, negotiate(&mut client, &engine, started))
+            .await
+        {
+            Ok(r) => r?,
+            Err(_) => return Err(anyhow::anyhow!("socks5 handshake timed out")),
+        };
+    // Negotiation already answered the client (rejection / resolve failure).
+    let Some(target) = negotiated else {
+        return Ok(());
+    };
+
+    match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(target.addr)).await {
+        Ok(Ok(mut upstream)) => {
+            // success reply
+            let mut reply = vec![VER, 0x00, 0x00, ATYP_IPV4];
+            reply.extend_from_slice(&[0, 0, 0, 0]);
+            reply.extend_from_slice(&0u16.to_be_bytes());
+            client.write_all(&reply).await?;
+            engine.metrics().add_tunnel();
+            let (a, b) = tokio::io::copy_bidirectional(&mut client, &mut upstream).await?;
+            engine.metrics().add_served(a + b);
+            engine.record(ReqRecord {
+                ts: rustcache_core::cache::meta::now_ms(),
+                method: "SOCKS5".into(),
+                url: target.addr.to_string(),
+                host: target.label,
+                status: 0,
+                outcome: Outcome::Tunnel,
+                duration_ms: started.elapsed().as_millis() as u64,
+                resp_bytes: a + b,
+            });
+            Ok(())
+        }
+        failed => {
+            // 0x04 host unreachable on timeout, 0x05 connection refused otherwise.
+            let reply_code = if failed.is_err() { 0x04 } else { 0x05 };
+            engine.metrics().add_error();
+            client
+                .write_all(&[VER, reply_code, 0x00, ATYP_IPV4, 0, 0, 0, 0, 0, 0])
+                .await?;
+            engine.record(ReqRecord {
+                ts: rustcache_core::cache::meta::now_ms(),
+                method: "SOCKS5".into(),
+                url: target.addr.to_string(),
+                host: target.label,
+                status: 0,
+                outcome: Outcome::Error,
+                duration_ms: started.elapsed().as_millis() as u64,
+                resp_bytes: 0,
+            });
+            Ok(())
+        }
+    }
+}
+
+/// Read greeting + CONNECT request.
+///
+/// `Ok(None)` means the client was already answered with a SOCKS5 error reply
+/// (unsupported command, unknown address type, DNS failure) and the caller
+/// should just close.
+async fn negotiate(
+    client: &mut TcpStream,
+    engine: &SharedEngine,
+    started: Instant,
+) -> anyhow::Result<Option<Socks5Target>> {
     // greeting
     let mut head = [0u8; 2];
     client.read_exact(&mut head).await?;
@@ -51,7 +127,7 @@ async fn handle(mut client: TcpStream, engine: SharedEngine) -> anyhow::Result<(
     }
     if !methods.contains(&METHOD_NO_AUTH) {
         client.write_all(&[VER, METHOD_NO_ACCEPTABLE]).await?;
-        return Ok(());
+        return Ok(None);
     }
     client.write_all(&[VER, METHOD_NO_AUTH]).await?;
 
@@ -78,7 +154,7 @@ async fn handle(mut client: TcpStream, engine: SharedEngine) -> anyhow::Result<(
             duration_ms: started.elapsed().as_millis() as u64,
             resp_bytes: 0,
         });
-        return Ok(());
+        return Ok(None);
     }
 
     let (host, host_label) = match atyp {
@@ -107,7 +183,7 @@ async fn handle(mut client: TcpStream, engine: SharedEngine) -> anyhow::Result<(
                     client
                         .write_all(&[VER, 0x04, 0x00, ATYP_IPV4, 0, 0, 0, 0, 0, 0])
                         .await?;
-                    return Ok(());
+                    return Ok(None);
                 }
             }
         }
@@ -116,59 +192,21 @@ async fn handle(mut client: TcpStream, engine: SharedEngine) -> anyhow::Result<(
             client.read_exact(&mut ip).await?;
             (
                 std::net::IpAddr::V6(ip.into()),
-                format!("{:?}", std::net::Ipv6Addr::from(ip)),
+                std::net::Ipv6Addr::from(ip).to_string(),
             )
         }
         _ => {
             client
                 .write_all(&[VER, 0x08, 0x00, ATYP_IPV4, 0, 0, 0, 0, 0, 0])
                 .await?;
-            return Ok(());
+            return Ok(None);
         }
     };
     let mut portb = [0u8; 2];
     client.read_exact(&mut portb).await?;
     let port = u16::from_be_bytes(portb);
-    let target = std::net::SocketAddr::new(host, port);
-
-    match TcpStream::connect(target).await {
-        Ok(mut upstream) => {
-            // success reply
-            let mut reply = vec![VER, 0x00, 0x00, ATYP_IPV4];
-            reply.extend_from_slice(&[0, 0, 0, 0]);
-            reply.extend_from_slice(&0u16.to_be_bytes());
-            client.write_all(&reply).await?;
-            engine.metrics().add_tunnel();
-            let (a, b) = tokio::io::copy_bidirectional(&mut client, &mut upstream).await?;
-            engine.metrics().add_served(a + b);
-            engine.record(ReqRecord {
-                ts: rustcache_core::cache::meta::now_ms(),
-                method: "SOCKS5".into(),
-                url: target.to_string(),
-                host: host_label,
-                status: 0,
-                outcome: Outcome::Tunnel,
-                duration_ms: started.elapsed().as_millis() as u64,
-                resp_bytes: a + b,
-            });
-            Ok(())
-        }
-        Err(_e) => {
-            engine.metrics().add_error();
-            client
-                .write_all(&[VER, 0x05, 0x00, ATYP_IPV4, 0, 0, 0, 0, 0, 0])
-                .await?;
-            engine.record(ReqRecord {
-                ts: rustcache_core::cache::meta::now_ms(),
-                method: "SOCKS5".into(),
-                url: target.to_string(),
-                host: host_label,
-                status: 0,
-                outcome: Outcome::Error,
-                duration_ms: started.elapsed().as_millis() as u64,
-                resp_bytes: 0,
-            });
-            Ok(())
-        }
-    }
+    Ok(Some(Socks5Target {
+        addr: std::net::SocketAddr::new(host, port),
+        label: host_label,
+    }))
 }

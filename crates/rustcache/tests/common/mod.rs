@@ -24,6 +24,9 @@ pub struct OriginState {
     pub body: RwLock<Vec<u8>>,
     pub cache_control: RwLock<String>,
     pub etag: RwLock<Option<String>>,
+    /// `Date` header to send, if any. Real origins always send one and
+    /// `max-age` is measured from it, so tests about freshness need it.
+    pub date: RwLock<Option<String>>,
     pub delay_ms: AtomicU64,
 }
 
@@ -35,6 +38,7 @@ impl OriginState {
             body: RwLock::new(body.as_bytes().to_vec()),
             cache_control: RwLock::new(cache_control.to_string()),
             etag: RwLock::new(None),
+            date: RwLock::new(None),
             delay_ms: AtomicU64::new(0),
         })
     }
@@ -120,10 +124,11 @@ async fn handle_origin_conn(sock: &mut TcpStream, st: Arc<OriginState>) -> anyho
 
         let etag = st.etag.read().unwrap().clone();
         let cc = st.cache_control.read().unwrap().clone();
+        let date = st.date.read().unwrap().clone();
         let body = st.body.read().unwrap().clone();
 
         if method.eq_ignore_ascii_case("HEAD") {
-            write_origin(sock, 200, &cc, etag.as_deref(), b"").await?;
+            write_origin(sock, 200, &cc, etag.as_deref(), date.as_deref(), b"").await?;
             continue;
         }
 
@@ -138,7 +143,7 @@ async fn handle_origin_conn(sock: &mut TcpStream, st: Arc<OriginState>) -> anyho
             }
         }
 
-        write_origin(sock, 200, &cc, etag.as_deref(), &body).await?;
+        write_origin(sock, 200, &cc, etag.as_deref(), date.as_deref(), &body).await?;
     }
 }
 
@@ -147,6 +152,7 @@ async fn write_origin(
     status: u16,
     cache_control: &str,
     etag: Option<&str>,
+    date: Option<&str>,
     body: &[u8],
 ) -> anyhow::Result<()> {
     let mut head = format!(
@@ -155,6 +161,9 @@ async fn write_origin(
     );
     if let Some(t) = etag {
         head.push_str(&format!("ETag: {t}\r\n"));
+    }
+    if let Some(d) = date {
+        head.push_str(&format!("Date: {d}\r\n"));
     }
     head.push_str("\r\n");
     sock.write_all(head.as_bytes()).await?;
@@ -302,12 +311,15 @@ pub async fn proxy_get_full(
     parse_response_full(&buf)
 }
 
+/// Status line, headers and body of a parsed HTTP/1.1 response.
+pub type ParsedResponse = (u16, Vec<(String, String)>, Vec<u8>);
+
 pub fn parse_response(buf: &[u8]) -> std::io::Result<(u16, Vec<u8>)> {
     let (status, _, body) = parse_response_full(buf)?;
     Ok((status, body))
 }
 
-pub fn parse_response_full(buf: &[u8]) -> std::io::Result<(u16, Vec<(String, String)>, Vec<u8>)> {
+pub fn parse_response_full(buf: &[u8]) -> std::io::Result<ParsedResponse> {
     let pos = buf
         .windows(4)
         .position(|w| w == b"\r\n\r\n")

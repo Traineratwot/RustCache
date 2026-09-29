@@ -12,6 +12,9 @@ use crate::Result;
 /// Speaks HTTP/1.1 and returns status + headers + body (fully buffered up to max_object_bytes).
 pub struct OriginFetcher {
     pub connect_timeout: std::time::Duration,
+    /// Cap on the whole response read (headers + body). Without it a silent or
+    /// half-open origin pins the task — and the coalescing slot — forever.
+    pub read_timeout: std::time::Duration,
     pub user_agent: String,
 }
 
@@ -19,9 +22,36 @@ impl Default for OriginFetcher {
     fn default() -> Self {
         Self {
             connect_timeout: std::time::Duration::from_secs(15),
+            read_timeout: std::time::Duration::from_secs(60),
             user_agent: format!("RustCache/{}", env!("CARGO_PKG_VERSION")),
         }
     }
+}
+
+/// Connection-scoped headers that must not be forwarded to the origin
+/// (RFC 9110 §7.6.1). Forwarding `Connection: keep-alive` in particular made
+/// the read-to-EOF path wait for the origin's idle timeout on every request.
+const HOP_BY_HOP: [&str; 9] = [
+    "connection",
+    "proxy-connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+];
+
+/// Header names listed in the client's `Connection:` value — also hop-by-hop.
+fn connection_tokens(req_headers: &[(String, String)]) -> Vec<String> {
+    req_headers
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("connection"))
+        .flat_map(|(_, v)| v.split(','))
+        .map(|t| t.trim().to_ascii_lowercase())
+        .filter(|t| !t.is_empty() && t != "close" && t != "keep-alive")
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -56,13 +86,13 @@ impl OriginFetcher {
             .with_context(|| format!("connect {addr}"))?;
         let _ = stream.set_nodelay(true);
 
+        let drop_tokens = connection_tokens(req_headers);
         let mut headers: Vec<(String, String)> = Vec::new();
         let mut saw_host = false;
         let mut saw_ua = false;
-        let mut saw_conn = false;
         for (k, v) in req_headers {
             let lk = k.to_ascii_lowercase();
-            if lk == "proxy-connection" || lk == "proxy-authorization" {
+            if HOP_BY_HOP.contains(&lk.as_str()) || drop_tokens.contains(&lk) {
                 continue;
             }
             if lk == "host" {
@@ -70,9 +100,6 @@ impl OriginFetcher {
             }
             if lk == "user-agent" {
                 saw_ua = true;
-            }
-            if lk == "connection" {
-                saw_conn = true;
             }
             headers.push((k.clone(), v.clone()));
         }
@@ -89,9 +116,9 @@ impl OriginFetcher {
         if !saw_ua {
             headers.push(("User-Agent".into(), self.user_agent.clone()));
         }
-        if !saw_conn {
-            headers.push(("Connection".into(), "close".into()));
-        }
+        // One request per upstream connection — the body is fully buffered, so
+        // keep-alive would only leave us waiting on an idle socket.
+        headers.push(("Connection".into(), "close".into()));
 
         let path = if parsed.path_query.is_empty() {
             "/"
@@ -135,7 +162,12 @@ impl OriginFetcher {
                 tls_stream.write_all(b).await?;
             }
             tls_stream.flush().await?;
-            let resp = read_http1_response(&mut tls_stream, max_body, method).await?;
+            let resp = tokio::time::timeout(
+                self.read_timeout,
+                read_http1_response(&mut tls_stream, max_body, method),
+            )
+            .await
+            .map_err(|_| crate::Error::Protocol(format!("read timeout from {addr}")))??;
             Ok(resp)
         } else {
             let mut stream = stream;
@@ -144,7 +176,12 @@ impl OriginFetcher {
                 stream.write_all(b).await?;
             }
             stream.flush().await?;
-            let resp = read_http1_response(&mut stream, max_body, method).await?;
+            let resp = tokio::time::timeout(
+                self.read_timeout,
+                read_http1_response(&mut stream, max_body, method),
+            )
+            .await
+            .map_err(|_| crate::Error::Protocol(format!("read timeout from {addr}")))??;
             Ok(resp)
         }
     }
@@ -398,5 +435,21 @@ mod tests {
     fn parse_url_with_port() {
         let u = parse_url("https://example.com:8443/").unwrap();
         assert_eq!(u.port, Some(8443));
+    }
+
+    #[test]
+    fn connection_tokens_lists_client_named_headers() {
+        let h = vec![
+            ("Connection".to_string(), "keep-alive, X-Hop".to_string()),
+            ("X-Hop".to_string(), "1".to_string()),
+        ];
+        assert_eq!(connection_tokens(&h), vec!["x-hop".to_string()]);
+    }
+
+    #[test]
+    fn hop_by_hop_covers_connection_scoped_headers() {
+        for name in ["connection", "transfer-encoding", "upgrade", "te"] {
+            assert!(HOP_BY_HOP.contains(&name), "{name} must be hop-by-hop");
+        }
     }
 }
