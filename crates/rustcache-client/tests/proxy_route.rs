@@ -106,12 +106,13 @@ async fn connect_via(proxy_addr: &str, target: &str) -> String {
 }
 
 fn health_ok() -> HealthMonitor {
-    // Default monitor starts Closed; we never probe — keep it closed.
-    HealthMonitor::new(&ClientConfig::default())
+    let up = rustcache_client::proxy::static_upstream("127.0.0.1", 3128, 3129);
+    HealthMonitor::new(&ClientConfig::default(), up)
 }
 
 fn health_down() -> HealthMonitor {
-    let m = HealthMonitor::new(&ClientConfig::default());
+    let up = rustcache_client::proxy::static_upstream("127.0.0.1", 3128, 3129);
+    let m = HealthMonitor::new(&ClientConfig::default(), up);
     for _ in 0..5 {
         m.record_failure("down");
     }
@@ -125,11 +126,10 @@ async fn http_forwards_to_upstream_when_closed() {
     let port: u16 = port_s.parse().unwrap();
 
     let (l, la) = rustcache_client::proxy::bind_local().await.unwrap();
+    let up = rustcache_client::proxy::static_upstream(host, port, port + 1);
     let srv = Arc::new(ProxyServer::new(
         &la.to_string(),
-        host,
-        port,
-        port + 1, // unused https
+        up,
         Arc::new(health_ok()),
         vec!["localhost".into()],
     ));
@@ -151,11 +151,10 @@ async fn http_goes_direct_when_breaker_open() {
         let tmp = TcpListener::bind("127.0.0.1:0").await.unwrap();
         tmp.local_addr().unwrap().port()
     };
+    let up = rustcache_client::proxy::static_upstream("127.0.0.1", blackhole_port, blackhole_port);
     let srv = Arc::new(ProxyServer::new(
         &la.to_string(),
-        "127.0.0.1",
-        blackhole_port,
-        blackhole_port,
+        up,
         Arc::new(health_down()),
         vec![],
     ));
@@ -175,11 +174,10 @@ async fn connect_direct_when_open() {
         let tmp = TcpListener::bind("127.0.0.1:0").await.unwrap();
         tmp.local_addr().unwrap().port()
     };
+    let up = rustcache_client::proxy::static_upstream("127.0.0.1", blackhole_port, blackhole_port);
     let srv = Arc::new(ProxyServer::new(
         &la.to_string(),
-        "127.0.0.1",
-        blackhole_port,
-        blackhole_port,
+        up,
         Arc::new(health_down()),
         vec![],
     ));
@@ -197,11 +195,10 @@ async fn connect_uses_mitm_upstream_when_closed() {
     let port: u16 = port_s.parse().unwrap();
 
     let (l, la) = rustcache_client::proxy::bind_local().await.unwrap();
+    let up = rustcache_client::proxy::static_upstream(host, port.saturating_sub(1).max(1), port);
     let srv = Arc::new(ProxyServer::new(
         &la.to_string(),
-        host,
-        port.saturating_sub(1).max(1), // http unused
-        port,
+        up,
         Arc::new(health_ok()),
         vec![],
     ));
@@ -220,11 +217,10 @@ async fn bypass_host_goes_direct() {
     let port: u16 = port_s.parse().unwrap();
 
     let (l, la) = rustcache_client::proxy::bind_local().await.unwrap();
+    let up = rustcache_client::proxy::static_upstream(host, port, port);
     let srv = Arc::new(ProxyServer::new(
         &la.to_string(),
-        host,
-        port,
-        port,
+        up,
         Arc::new(health_ok()),
         vec!["127.0.0.1".into(), "localhost".into()],
     ));
@@ -248,11 +244,10 @@ async fn hop_down_fails_open_even_when_breaker_closed() {
 
     let (l, la) = rustcache_client::proxy::bind_local().await.unwrap();
     // health_ok → breaker Closed → route wants upstream, but port is dead.
+    let up = rustcache_client::proxy::static_upstream("127.0.0.1", blackhole_port, blackhole_port);
     let srv = Arc::new(ProxyServer::new(
         &la.to_string(),
-        "127.0.0.1",
-        blackhole_port,
-        blackhole_port,
+        up,
         Arc::new(health_ok()),
         vec![],
     ));

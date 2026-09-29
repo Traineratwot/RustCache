@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use parking_lot::RwLock;
 
-use crate::api::RustCacheApi;
+use crate::api::{DiscoveredTarget, RustCacheApi, SharedUpstream};
 use crate::capture::Capture;
 use crate::config::{CaptureMode, ClientConfig};
 use crate::health::{BreakerState, HealthMonitor};
@@ -23,6 +23,12 @@ pub struct GuiState {
     pub ca_installed: Option<bool>,
     pub ca_fp: String,
     pub stats_json: String,
+    /// User-editable RustCache host / IP / URL.
+    pub host_input: String,
+    /// Human-readable discovered ports line.
+    pub ports_line: String,
+    pub discovered: Option<DiscoveredTarget>,
+    pub connecting: bool,
 }
 
 impl Default for GuiState {
@@ -35,11 +41,54 @@ impl Default for GuiState {
             ca_installed: None,
             ca_fp: String::new(),
             stats_json: String::new(),
+            host_input: "127.0.0.1".into(),
+            ports_line: String::new(),
+            discovered: None,
+            connecting: false,
         }
     }
 }
 
 pub type SharedGui = Arc<RwLock<GuiState>>;
+
+/// Everything needed to start the UI on the main thread.
+pub struct GuiLaunch {
+    pub cfg: ClientConfig,
+    pub health: Arc<HealthMonitor>,
+    pub gui: SharedGui,
+    pub on_quit: Arc<dyn Fn() + Send + Sync>,
+    /// Tokio handle so the UI thread can spawn async work.
+    pub rt: tokio::runtime::Handle,
+    /// Live upstream — updated when the user connects to a host.
+    pub upstream: SharedUpstream,
+}
+
+impl GuiLaunch {
+    /// Block on the native event loop (must be called from the main thread).
+    pub fn run(self) -> Result<()> {
+        let options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([460.0, 580.0])
+                .with_title("RustCache Client"),
+            ..Default::default()
+        };
+        let app = ClientApp {
+            cfg: self.cfg,
+            health: self.health,
+            gui: self.gui,
+            on_quit: self.on_quit,
+            rt: self.rt,
+            upstream: self.upstream,
+            last_refresh: Instant::now() - Duration::from_secs(60),
+        };
+        eframe::run_native(
+            "RustCache Client",
+            options,
+            Box::new(|_cc| Ok(Box::new(app))),
+        )
+        .map_err(|e| anyhow::anyhow!("ui: {e}"))
+    }
+}
 
 /// Launch the status window (blocking on the UI thread). Proxy/health run on the tokio runtime.
 pub fn launch(
@@ -48,25 +97,19 @@ pub fn launch(
     gui: SharedGui,
     on_quit: impl Fn() + Send + Sync + 'static,
 ) -> Result<()> {
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([420.0, 520.0])
-            .with_title("RustCache Client"),
-        ..Default::default()
-    };
-    let app = ClientApp {
+    let rt = tokio::runtime::Handle::try_current()
+        .map_err(|_| anyhow::anyhow!("gui::launch requires a live tokio runtime"))?;
+    let upstream =
+        crate::api::shared_upstream(crate::api::UpstreamCfg::from_api_base(&cfg.rustcache_api));
+    GuiLaunch {
         cfg,
         health,
         gui,
         on_quit: Arc::new(on_quit),
-        last_refresh: Instant::now() - Duration::from_secs(60),
-    };
-    eframe::run_native(
-        "RustCache Client",
-        options,
-        Box::new(|_cc| Ok(Box::new(app))),
-    )
-    .map_err(|e| anyhow::anyhow!("ui: {e}"))
+        rt,
+        upstream,
+    }
+    .run()
 }
 
 struct ClientApp {
@@ -74,6 +117,8 @@ struct ClientApp {
     health: Arc<HealthMonitor>,
     gui: SharedGui,
     on_quit: Arc<dyn Fn() + Send + Sync>,
+    rt: tokio::runtime::Handle,
+    upstream: SharedUpstream,
     last_refresh: Instant,
 }
 
@@ -92,7 +137,32 @@ impl eframe::App for ClientApp {
             ui.heading("RustCache Client");
             ui.separator();
 
-            ui.label(egui::RichText::new(format!("API: {}", self.cfg.rustcache_api)).small());
+            // --- RustCache host (IP / hostname / URL) ---
+            ui.horizontal(|ui| {
+                ui.label("RustCache host:");
+                let mut host = state.host_input.clone();
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut host)
+                        .desired_width(180.0)
+                        .hint_text("192.168.1.10 or host:8080"),
+                );
+                if resp.changed() {
+                    self.gui.write().host_input = host.clone();
+                }
+                let busy = state.connecting;
+                if ui
+                    .add_enabled(!busy, egui::Button::new(if busy { "…" } else { "Connect" }))
+                    .clicked()
+                {
+                    self.connect_host(host);
+                }
+            });
+            if !state.ports_line.is_empty() {
+                ui.label(egui::RichText::new(&state.ports_line).small());
+            }
+            ui.label(
+                egui::RichText::new(format!("API: {}", self.upstream.read().api_base)).small(),
+            );
 
             // Circuit / health
             let (color, label) = match snap.state {
@@ -132,7 +202,7 @@ impl eframe::App for ClientApp {
                     .changed()
                 {
                     let mode = if on { state.mode } else { CaptureMode::Off };
-                    apply_mode(&self.cfg, &self.gui, mode, &self.on_quit);
+                    apply_mode(&self.rt, &self.cfg, &self.gui, mode);
                 }
                 ui.label(format!("{:?}", state.mode));
             });
@@ -144,7 +214,7 @@ impl eframe::App for ClientApp {
                 ] {
                     let selected = state.mode == mode;
                     if ui.selectable_label(selected, label).clicked() {
-                        apply_mode(&self.cfg, &self.gui, mode, &self.on_quit);
+                        apply_mode(&self.rt, &self.cfg, &self.gui, mode);
                     }
                 }
             });
@@ -172,10 +242,10 @@ impl eframe::App for ClientApp {
             }
             ui.horizontal(|ui| {
                 if ui.button("Install CA").clicked() {
-                    spawn_ca_op(self.cfg.clone(), CaOp::Install);
+                    spawn_ca_op(self.rt.clone(), self.cfg.clone(), CaOp::Install);
                 }
                 if ui.button("Uninstall CA").clicked() {
-                    spawn_ca_op(self.cfg.clone(), CaOp::Uninstall);
+                    spawn_ca_op(self.rt.clone(), self.cfg.clone(), CaOp::Uninstall);
                 }
                 if ui.button("Refresh").clicked() {
                     self.refresh_async(ctx.clone());
@@ -211,17 +281,10 @@ fn on_off(v: bool) -> &'static str {
     if v { "up" } else { "down" }
 }
 
-fn apply_mode(
-    cfg: &ClientConfig,
-    gui: &SharedGui,
-    mode: CaptureMode,
-    on_quit: &Arc<dyn Fn() + Send + Sync>,
-) {
+fn apply_mode(rt: &tokio::runtime::Handle, cfg: &ClientConfig, gui: &SharedGui, mode: CaptureMode) {
     let cfg = cfg.clone();
     let gui = gui.clone();
-    // keep on_quit unused here — enable/disable only
-    let _ = on_quit;
-    tokio::spawn(async move {
+    rt.spawn(async move {
         let capture = match Capture::default_store() {
             Ok(c) => c,
             Err(e) => {
@@ -254,8 +317,8 @@ enum CaOp {
     Uninstall,
 }
 
-fn spawn_ca_op(cfg: ClientConfig, op: CaOp) {
-    tokio::spawn(async move {
+fn spawn_ca_op(rt: tokio::runtime::Handle, cfg: ClientConfig, op: CaOp) {
+    rt.spawn(async move {
         let api = RustCacheApi::new(&cfg.rustcache_api).with_timeout(Duration::from_secs(5));
         let _ = match op {
             CaOp::Install => crate::ca::install(&api, &cfg.ca, None, false).await,
@@ -265,12 +328,49 @@ fn spawn_ca_op(cfg: ClientConfig, op: CaOp) {
 }
 
 impl ClientApp {
+    /// User pressed Connect: discover ports and retarget the proxy.
+    fn connect_host(&self, host: String) {
+        let rt = self.rt.clone();
+        let gui = self.gui.clone();
+        let upstream = self.upstream.clone();
+        let mut cfg = self.cfg.clone();
+        gui.write().connecting = true;
+        gui.write().last_error = None;
+        rt.spawn(async move {
+            match crate::api::discover_target(&host).await {
+                Ok(d) => {
+                    *upstream.write() = crate::api::UpstreamCfg::from_discovered(&d);
+                    // Persist the API base so the next start finds the same instance.
+                    cfg.rustcache_api = d.api_base.clone();
+                    let _ = cfg.save(&ClientConfig::default_path());
+                    let mut g = gui.write();
+                    g.connecting = false;
+                    g.discovered = Some(d.clone());
+                    g.host_input = d.host.clone();
+                    g.ports_line = format!(
+                        "discovered → http:{}  https:{}  socks:{}",
+                        d.http_port, d.https_port, d.socks_port
+                    );
+                    g.status_line = format!("connected to {}", d.api_base);
+                    g.last_error = None;
+                    g.ca_installed = None; // force refresh
+                }
+                Err(e) => {
+                    let mut g = gui.write();
+                    g.connecting = false;
+                    g.ports_line.clear();
+                    g.last_error = Some(format!("connect failed: {e}"));
+                }
+            }
+        });
+    }
+
     fn refresh_async(&self, ctx: egui::Context) {
         let api =
             RustCacheApi::new(&self.cfg.rustcache_api).with_timeout(Duration::from_millis(800));
         let gui = self.gui.clone();
         let cfg = self.cfg.clone();
-        tokio::spawn(async move {
+        self.rt.spawn(async move {
             if let Ok(st) = crate::ca::status(&api, &cfg.ca).await {
                 let mut g = gui.write();
                 g.ca_installed = Some(st.installed);

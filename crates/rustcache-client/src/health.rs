@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
 
-use crate::api::{HealthReport, RustCacheApi};
+use crate::api::{HealthReport, RustCacheApi, SharedUpstream};
 use crate::config::ClientConfig;
 
 /// Breaker state as u8 for lock-free reads on the accept path.
@@ -58,7 +58,7 @@ impl Default for HealthSnapshot {
 }
 
 pub struct HealthMonitor {
-    api: RustCacheApi,
+    upstream: SharedUpstream,
     fail_open: bool,
     fail_threshold: u32,
     open_ms: u64,
@@ -69,9 +69,9 @@ pub struct HealthMonitor {
 }
 
 impl HealthMonitor {
-    pub fn new(cfg: &ClientConfig) -> Self {
+    pub fn new(cfg: &ClientConfig, upstream: SharedUpstream) -> Self {
         Self {
-            api: RustCacheApi::new(&cfg.rustcache_api),
+            upstream,
             fail_open: cfg.fail_open,
             fail_threshold: cfg.breaker_failures,
             open_ms: cfg.breaker_open_ms,
@@ -80,6 +80,23 @@ impl HealthMonitor {
             snap: RwLock::new(HealthSnapshot::default()),
             opened_at: RwLock::new(None),
         }
+    }
+
+    fn api(&self) -> RustCacheApi {
+        let base = self.upstream.read().api_base.clone();
+        RustCacheApi::new(&base).with_timeout(Duration::from_millis(800))
+    }
+
+    fn host(&self) -> String {
+        self.upstream.read().host.clone()
+    }
+
+    fn http_port(&self) -> u16 {
+        self.upstream.read().http_port
+    }
+
+    fn https_port(&self) -> u16 {
+        self.upstream.read().https_port
     }
 
     pub fn snapshot(&self) -> HealthSnapshot {
@@ -169,13 +186,14 @@ impl HealthMonitor {
             }
         }
 
-        match self.api.health().await {
+        match self.api().health().await {
             Ok(rep) => self.apply_health(&rep),
             Err(e) => {
                 // API down — try TCP probes as a weaker signal.
-                let host = self.api_host();
-                let http_up = crate::api::tcp_alive(&host, 3128, Duration::from_millis(300)).await;
-                let https_up = crate::api::tcp_alive(&host, 3129, Duration::from_millis(300)).await;
+                let host = self.host();
+                let (hp, sp) = (self.http_port(), self.https_port());
+                let http_up = crate::api::tcp_alive(&host, hp, Duration::from_millis(300)).await;
+                let https_up = crate::api::tcp_alive(&host, sp, Duration::from_millis(300)).await;
                 if http_up || https_up {
                     // Ports accept — treat as degraded success (API may be on another bind).
                     let mut s = self.snap.write();
@@ -220,17 +238,6 @@ impl HealthMonitor {
             self.record_failure("health: not ok");
         }
     }
-
-    fn api_host(&self) -> String {
-        self.api
-            .base()
-            .trim_start_matches("https://")
-            .trim_start_matches("http://")
-            .split(':')
-            .next()
-            .unwrap_or("127.0.0.1")
-            .to_string()
-    }
 }
 
 #[cfg(test)]
@@ -243,7 +250,9 @@ mod tests {
             breaker_open_ms: 50,
             ..Default::default()
         };
-        HealthMonitor::new(&cfg)
+        let up =
+            crate::api::shared_upstream(crate::api::UpstreamCfg::from_api_base(&cfg.rustcache_api));
+        HealthMonitor::new(&cfg, up)
     }
 
     #[test]
@@ -283,7 +292,9 @@ mod tests {
             fail_open: false,
             ..Default::default()
         };
-        let m = HealthMonitor::new(&cfg);
+        let up =
+            crate::api::shared_upstream(crate::api::UpstreamCfg::from_api_base(&cfg.rustcache_api));
+        let m = HealthMonitor::new(&cfg, up);
         for _ in 0..10 {
             m.record_failure("e");
         }

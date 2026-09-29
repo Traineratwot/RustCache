@@ -14,6 +14,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tokio::net::{TcpListener, TcpStream};
 
+use crate::api::SharedUpstream;
 use crate::health::HealthMonitor;
 use relay::Hop;
 
@@ -22,9 +23,7 @@ pub const HEAD_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct ProxyServer {
     listen: String,
-    api_host: String,
-    http_port: u16,
-    https_port: u16,
+    upstream: SharedUpstream,
     health: Arc<HealthMonitor>,
     bypass: Vec<String>,
 }
@@ -32,20 +31,21 @@ pub struct ProxyServer {
 impl ProxyServer {
     pub fn new(
         listen: &str,
-        api_host: &str,
-        http_port: u16,
-        https_port: u16,
+        upstream: SharedUpstream,
         health: Arc<HealthMonitor>,
         bypass: Vec<String>,
     ) -> Self {
         Self {
             listen: listen.to_string(),
-            api_host: api_host.to_string(),
-            http_port,
-            https_port,
+            upstream,
             health,
             bypass,
         }
+    }
+
+    fn target(&self) -> (String, u16, u16) {
+        let u = self.upstream.read();
+        (u.host.clone(), u.http_port, u.https_port)
     }
 
     /// Bind and serve until the process exits.
@@ -93,8 +93,9 @@ impl ProxyServer {
 
         // Per-connection fail-open: if the chosen RustCache hop is unreachable,
         // fall back to DIRECT before anything is written to the client.
+        let (host, http_port, https_port) = self.target();
         match route {
-            Route::Mitm => match relay::try_upstream(&self.api_host, self.https_port).await {
+            Route::Mitm => match relay::try_upstream(&host, https_port).await {
                 Hop::Upstream(up) => {
                     self.health.record_success();
                     relay::connect_via_connected(client, up, &target).await
@@ -104,7 +105,7 @@ impl ProxyServer {
                     relay::connect_direct(client, &target).await
                 }
             },
-            Route::RawTunnel => match relay::try_upstream(&self.api_host, self.http_port).await {
+            Route::RawTunnel => match relay::try_upstream(&host, http_port).await {
                 Hop::Upstream(up) => {
                     self.health.record_success();
                     relay::connect_via_connected(client, up, &target).await
@@ -125,7 +126,8 @@ impl ProxyServer {
 
         match route {
             Route::Mitm | Route::RawTunnel => {
-                match relay::try_upstream(&self.api_host, self.http_port).await {
+                let (host, http_port, _https) = self.target();
+                match relay::try_upstream(&host, http_port).await {
                     Hop::Upstream(up) => {
                         self.health.record_success();
                         relay::http_via_connected(client, up, head).await
@@ -146,4 +148,15 @@ pub async fn bind_local() -> Result<(TcpListener, SocketAddr)> {
     let l = TcpListener::bind("127.0.0.1:0").await?;
     let a = l.local_addr()?;
     Ok((l, a))
+}
+
+/// Fixed upstream for tests / CLI when discovery is not used.
+pub fn static_upstream(host: &str, http_port: u16, https_port: u16) -> SharedUpstream {
+    crate::api::shared_upstream(crate::api::UpstreamCfg {
+        api_base: format!("http://{host}:8080"),
+        host: host.to_string(),
+        http_port,
+        https_port,
+        socks_port: 1080,
+    })
 }

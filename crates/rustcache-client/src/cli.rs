@@ -198,7 +198,25 @@ async fn cmd_run(cfg: ClientConfig, mode: Option<ModeArg>, no_capture: bool) -> 
         tracing::warn!(%msg, "recovered dirty system-proxy state");
     }
 
-    let health = Arc::new(HealthMonitor::new(&cfg));
+    // Discover proxy ports from the RustCache API (host may be remote).
+    let upstream = match crate::api::discover_target(&cfg.rustcache_api).await {
+        Ok(d) => {
+            tracing::info!(
+                api = %d.api_base,
+                http = d.http_port,
+                https = d.https_port,
+                socks = d.socks_port,
+                "discovered RustCache"
+            );
+            crate::api::shared_upstream(crate::api::UpstreamCfg::from_discovered(&d))
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "discovery failed — using default ports");
+            crate::api::shared_upstream(crate::api::UpstreamCfg::from_api_base(&cfg.rustcache_api))
+        }
+    };
+
+    let health = Arc::new(HealthMonitor::new(&cfg, upstream.clone()));
     {
         let h = health.clone();
         tokio::spawn(async move {
@@ -219,9 +237,7 @@ async fn cmd_run(cfg: ClientConfig, mode: Option<ModeArg>, no_capture: bool) -> 
     let (host, port) = cfg.listen_addr()?;
     let server = Arc::new(ProxyServer::new(
         &cfg.listen,
-        &cfg.api_host(),
-        cfg.upstream_http_port(),
-        cfg.upstream_https_port(),
+        upstream,
         health.clone(),
         cfg.proxy_bypass.clone(),
     ));
@@ -253,15 +269,21 @@ async fn cmd_run(cfg: ClientConfig, mode: Option<ModeArg>, no_capture: bool) -> 
     Ok(())
 }
 
-/// GUI entry: proxy + health + tray/window. Blocking on the UI thread.
-async fn cmd_gui(cfg: ClientConfig, mode: Option<ModeArg>) -> Result<i32> {
+/// Result of preparing a GUI session (to be run on the main thread).
+pub enum GuiPrepared {
+    /// GUI is compiled in; call `run()` on the main thread.
+    #[cfg(feature = "gui")]
+    Ready(Box<crate::gui::GuiLaunch>),
+    /// Not a GUI build.
+    Disabled,
+}
+
+/// Start proxy + health + capture; return the UI launcher (does **not** block).
+pub async fn prepare_gui(cfg: ClientConfig, mode: Option<ModeArg>) -> Result<GuiPrepared> {
     #[cfg(not(feature = "gui"))]
     {
         let _ = (cfg, mode);
-        eprintln!(
-            "GUI support is not compiled in. Build with: cargo build -p rustcache-client --features gui"
-        );
-        Ok(exit::PLATFORM)
+        Ok(GuiPrepared::Disabled)
     }
 
     #[cfg(feature = "gui")]
@@ -278,7 +300,32 @@ async fn cmd_gui(cfg: ClientConfig, mode: Option<ModeArg>) -> Result<i32> {
             tracing::warn!(%msg, "recovered dirty system-proxy state");
         }
 
-        let health = StdArc::new(HealthMonitor::new(&cfg));
+        // Discover ports from user-configured host / API URL.
+        let (upstream, discovered) = match crate::api::discover_target(&cfg.rustcache_api).await {
+            Ok(d) => {
+                tracing::info!(
+                    api = %d.api_base,
+                    http = d.http_port,
+                    https = d.https_port,
+                    "discovered RustCache"
+                );
+                (
+                    crate::api::shared_upstream(crate::api::UpstreamCfg::from_discovered(&d)),
+                    Some(d),
+                )
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "discovery failed — defaults");
+                (
+                    crate::api::shared_upstream(crate::api::UpstreamCfg::from_api_base(
+                        &cfg.rustcache_api,
+                    )),
+                    None,
+                )
+            }
+        };
+
+        let health = StdArc::new(HealthMonitor::new(&cfg, upstream.clone()));
         {
             let h = health.clone();
             tokio::spawn(async move {
@@ -286,9 +333,20 @@ async fn cmd_gui(cfg: ClientConfig, mode: Option<ModeArg>) -> Result<i32> {
             });
         }
 
+        let host_input = crate::api::host_of_api_base(&cfg.rustcache_api);
+        let ports_line = match &discovered {
+            Some(d) => format!(
+                "http:{} https:{} socks:{}",
+                d.http_port, d.https_port, d.socks_port
+            ),
+            None => "ports: defaults (3128/3129/1080)".into(),
+        };
         let gui_state: gui::SharedGui = StdArc::new(RwLock::new(gui::GuiState {
             mode,
             capture_on: mode != CaptureMode::Off,
+            host_input: host_input.clone(),
+            ports_line,
+            discovered: discovered.clone(),
             ..Default::default()
         }));
 
@@ -307,9 +365,7 @@ async fn cmd_gui(cfg: ClientConfig, mode: Option<ModeArg>) -> Result<i32> {
         let (host, port) = cfg.listen_addr()?;
         let server = StdArc::new(ProxyServer::new(
             &cfg.listen,
-            &cfg.api_host(),
-            cfg.upstream_http_port(),
-            cfg.upstream_https_port(),
+            upstream.clone(),
             health.clone(),
             cfg.proxy_bypass.clone(),
         ));
@@ -323,7 +379,6 @@ async fn cmd_gui(cfg: ClientConfig, mode: Option<ModeArg>) -> Result<i32> {
         }
         tracing::info!(%host, port, mode = ?mode, "rustcache-client GUI running");
 
-        // Restore on any exit path from the UI.
         let capture_for_quit = Capture::default_store()?;
         let mode_for_quit = mode;
         let on_quit = move || {
@@ -335,21 +390,35 @@ async fn cmd_gui(cfg: ClientConfig, mode: Option<ModeArg>) -> Result<i32> {
             }
         };
 
-        // eframe blocks; run it on the current thread (must be main for some platforms).
-        let cfg_ui = cfg.clone();
-        let health_ui = health.clone();
-        let gui_ui = gui_state.clone();
-        let launch =
-            tokio::task::spawn_blocking(move || gui::launch(cfg_ui, health_ui, gui_ui, on_quit));
-        match launch.await {
-            Ok(Ok(())) => Ok(exit::OK),
-            Ok(Err(e)) => {
-                eprintln!("gui failed: {e:#}");
-                Ok(exit::PLATFORM)
-            }
-            Err(e) => {
-                eprintln!("gui task: {e}");
-                Ok(exit::PLATFORM)
+        Ok(GuiPrepared::Ready(Box::new(gui::GuiLaunch {
+            cfg,
+            health,
+            gui: gui_state,
+            on_quit: StdArc::new(on_quit),
+            rt: tokio::runtime::Handle::current(),
+            upstream,
+        })))
+    }
+}
+
+/// CLI handler when the GUI will run on the main thread (called from `execute` path).
+async fn cmd_gui(cfg: ClientConfig, mode: Option<ModeArg>) -> Result<i32> {
+    match prepare_gui(cfg, mode).await? {
+        GuiPrepared::Disabled => {
+            eprintln!(
+                "GUI support is not compiled in. Build with: cargo build -p rustcache-client --features gui"
+            );
+            Ok(exit::PLATFORM)
+        }
+        #[cfg(feature = "gui")]
+        GuiPrepared::Ready(launch) => {
+            // Fallback if someone calls this from a non-main thread: still try.
+            match launch.run() {
+                Ok(()) => Ok(exit::OK),
+                Err(e) => {
+                    eprintln!("gui failed: {e:#}");
+                    Ok(exit::PLATFORM)
+                }
             }
         }
     }

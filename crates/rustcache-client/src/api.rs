@@ -17,6 +17,107 @@ pub struct HealthReport {
     pub http_running: bool,
     pub https_running: bool,
     pub socks_running: bool,
+    pub http_port: u16,
+    pub https_port: u16,
+    pub socks_port: u16,
+    pub api_port: u16,
+}
+
+/// Where a RustCache instance lives and which ports it actually bound.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredTarget {
+    /// e.g. `http://192.168.1.10:8080`
+    pub api_base: String,
+    /// Host/IP without port.
+    pub host: String,
+    pub http_port: u16,
+    pub https_port: u16,
+    pub socks_port: u16,
+    pub api_port: u16,
+}
+
+/// Normalize free-form user input (IP, host, host:port, URL) to an API base URL.
+///
+/// - `192.168.1.10`           → `http://192.168.1.10:8080`
+/// - `192.168.1.10:8080`      → `http://192.168.1.10:8080`
+/// - `http://10.0.0.5:8080`   → as-is
+/// - `myhost.local`           → `http://myhost.local:8080`
+pub fn normalize_api_base(input: &str, default_api_port: u16) -> String {
+    let s = input.trim().trim_end_matches('/');
+    if s.is_empty() {
+        return format!("http://127.0.0.1:{default_api_port}");
+    }
+    if s.starts_with("http://") || s.starts_with("https://") {
+        return s.to_string();
+    }
+    // host or host:port (IPv6 in brackets)
+    if s.starts_with('[') {
+        if s.contains("]:") {
+            return format!("http://{s}");
+        }
+        return format!("http://{s}:{default_api_port}");
+    }
+    let has_port = s
+        .rsplit_once(':')
+        .map(|(_, p)| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+        .unwrap_or(false);
+    if has_port {
+        format!("http://{s}")
+    } else {
+        format!("http://{s}:{default_api_port}")
+    }
+}
+
+/// Host part of an API base or bare input.
+pub fn host_of_api_base(base: &str) -> String {
+    let s = base
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/');
+    let authority = s.split('/').next().unwrap_or(s);
+    if let Some(rest) = authority.strip_prefix('[') {
+        return rest.split(']').next().unwrap_or(rest).to_string();
+    }
+    authority.split(':').next().unwrap_or(authority).to_string()
+}
+
+/// Live upstream (RustCache) coordinates — updated when the user enters a host.
+#[derive(Debug, Clone)]
+pub struct UpstreamCfg {
+    pub api_base: String,
+    pub host: String,
+    pub http_port: u16,
+    pub https_port: u16,
+    pub socks_port: u16,
+}
+
+impl UpstreamCfg {
+    pub fn from_api_base(base: &str) -> Self {
+        Self {
+            api_base: normalize_api_base(base, 8080),
+            host: host_of_api_base(base),
+            http_port: 3128,
+            https_port: 3129,
+            socks_port: 1080,
+        }
+    }
+
+    pub fn from_discovered(d: &DiscoveredTarget) -> Self {
+        Self {
+            api_base: d.api_base.clone(),
+            host: d.host.clone(),
+            http_port: d.http_port,
+            https_port: d.https_port,
+            socks_port: d.socks_port,
+        }
+    }
+}
+
+pub type SharedUpstream = std::sync::Arc<parking_lot::RwLock<UpstreamCfg>>;
+
+pub fn shared_upstream(cfg: UpstreamCfg) -> SharedUpstream {
+    std::sync::Arc::new(parking_lot::RwLock::new(cfg))
 }
 
 impl RustCacheApi {
@@ -49,10 +150,29 @@ impl RustCacheApi {
             for l in listeners {
                 let name = l.get("name").and_then(|x| x.as_str()).unwrap_or("");
                 let running = l.get("running").and_then(|x| x.as_bool()).unwrap_or(false);
+                let port = l.get("port").and_then(|x| x.as_u64()).unwrap_or(0) as u16;
                 match name {
-                    "HTTP proxy" => rep.http_running = running,
-                    "HTTPS MITM" => rep.https_running = running,
-                    "SOCKS5" => rep.socks_running = running,
+                    "HTTP proxy" => {
+                        rep.http_running = running;
+                        if port > 0 {
+                            rep.http_port = port;
+                        }
+                    }
+                    "HTTPS MITM" => {
+                        rep.https_running = running;
+                        if port > 0 {
+                            rep.https_port = port;
+                        }
+                    }
+                    "SOCKS5" => {
+                        rep.socks_running = running;
+                        if port > 0 {
+                            rep.socks_port = port;
+                        }
+                    }
+                    "REST API" if port > 0 => {
+                        rep.api_port = port;
+                    }
                     _ => {}
                 }
             }
@@ -133,6 +253,46 @@ impl RustCacheApi {
     }
 }
 
+/// Probe `http://host:port/api/health` (and a few fallback API ports) and
+/// return the bound proxy ports. `input` is free-form host / URL.
+pub async fn discover_target(input: &str) -> Result<DiscoveredTarget> {
+    const DEFAULT_API_PORT: u16 = 8080;
+    let base = normalize_api_base(input, DEFAULT_API_PORT);
+    let host = host_of_api_base(&base);
+
+    // Try the given base first, then common API ports on the same host.
+    let mut candidates = vec![base.clone()];
+    for p in [DEFAULT_API_PORT, 8081, 8082, 80, 8888] {
+        let alt = normalize_api_base(&host, p);
+        if !candidates.contains(&alt) {
+            candidates.push(alt);
+        }
+    }
+
+    let mut last_err = anyhow::anyhow!("no API answered on {host}");
+    for cand in candidates {
+        let api = RustCacheApi::new(&cand).with_timeout(Duration::from_millis(1200));
+        match api.health().await {
+            Ok(h) => {
+                let http_port = if h.http_port > 0 { h.http_port } else { 3128 };
+                let https_port = if h.https_port > 0 { h.https_port } else { 3129 };
+                let socks_port = if h.socks_port > 0 { h.socks_port } else { 1080 };
+                let api_port = h.api_port;
+                return Ok(DiscoveredTarget {
+                    api_base: cand,
+                    host,
+                    http_port,
+                    https_port,
+                    socks_port,
+                    api_port,
+                });
+            }
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
+}
+
 struct HttpUri {
     host: String,
     port: u16,
@@ -201,5 +361,27 @@ mod tests {
         let (h, b) = split_http_body(raw).unwrap();
         assert!(h.starts_with(b"HTTP/1.1"));
         assert_eq!(b, b"hi");
+    }
+
+    #[test]
+    fn normalize_host_forms() {
+        assert_eq!(
+            normalize_api_base("192.168.1.10", 8080),
+            "http://192.168.1.10:8080"
+        );
+        assert_eq!(
+            normalize_api_base("192.168.1.10:9000", 8080),
+            "http://192.168.1.10:9000"
+        );
+        assert_eq!(
+            normalize_api_base("http://10.0.0.5:8080", 8080),
+            "http://10.0.0.5:8080"
+        );
+        assert_eq!(
+            normalize_api_base("myhost.local", 8080),
+            "http://myhost.local:8080"
+        );
+        assert_eq!(host_of_api_base("http://192.168.1.10:8080"), "192.168.1.10");
+        assert_eq!(host_of_api_base("10.0.0.5"), "10.0.0.5");
     }
 }

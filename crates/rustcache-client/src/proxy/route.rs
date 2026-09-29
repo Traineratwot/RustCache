@@ -78,11 +78,17 @@ mod tests {
     use crate::health::HealthMonitor;
 
     fn mon_up() -> HealthMonitor {
-        HealthMonitor::new(&ClientConfig::default())
+        let up = crate::api::shared_upstream(crate::api::UpstreamCfg::from_api_base(
+            "http://127.0.0.1:8080",
+        ));
+        HealthMonitor::new(&ClientConfig::default(), up)
     }
 
     fn mon_down() -> HealthMonitor {
-        let m = HealthMonitor::new(&ClientConfig::default());
+        let up = crate::api::shared_upstream(crate::api::UpstreamCfg::from_api_base(
+            "http://127.0.0.1:8080",
+        ));
+        let m = HealthMonitor::new(&ClientConfig::default(), up);
         for _ in 0..5 {
             m.record_failure("down");
         }
