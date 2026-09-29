@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/rustcache", "crates/rustcache-core"]
+members = ["crates/rustcache", "crates/rustcache-core", "crates/rustcache-client"]
 
 [workspace.package]
 version = "0.1.4"
@@ -43,6 +43,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 webpki-roots = "0.26"
 socket2 = "0.5"
+sha2 = "0.10"
+dirs = "6"
+serde_with = "3"
 
 [profile.release]
 lto = "thin"

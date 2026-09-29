@@ -13,6 +13,7 @@ Plans: `docs/plans/`. Delivery reports: `docs/compose/spec/`.
 
 - `crates/rustcache-core` — lib: `cache/` (key/disk/mem/meta/evict/coalesce), `certs/` (ca/leaf/store), `http/` (cache_policy/fetch), `stats/` (metrics + SQLite `logstore`), `excl/`
 - `crates/rustcache` — bin: CLI `main.rs`, shared `engine.rs` (`CacheEngine`), `listeners/` (http_proxy, mitm_proxy, socks5), `api/` (routes, pac, state), `config/` (schema, watch), `ui_embed.rs` (feature `embed-ui`)
+- `crates/rustcache-client` — bin: desktop client (CA install, system proxy, resilient local proxy :31280 → RustCache with DIRECT fail-open). Does **not** manage the rustcache process. Optional `--features gui` (eframe + tray-icon) for `run --tray` / `gui`.
 - `web/` — SPA source. `scripts/smoke.sh` and integration `tests/` live under `crates/rustcache/tests/` (fixtures in `tests/common/`).
 
 ## Settings & data locations
@@ -118,6 +119,32 @@ For UI work also: `npm --prefix web run lint && npm --prefix web run build`.
 - SOCKS5 is no-auth CONNECT-only tunnel — no caching on that path. CONNECT on :3128 is also a raw tunnel.
 - Excluded hosts on the MITM port are spliced (raw tunnel, no MITM) — client sees the origin cert.
 - `embed-ui` needs `web/dist` present at compile time (`rust-embed` folder `../../web/dist/`). Build the UI first or the feature fails.
+
+## Development rules
+
+Generalizable lessons from the `fix/audit-2026-09` merge (security/correctness/robustness). Specific facts live in Hard rules / Gotchas; these are the working practices that prevent whole bug classes.
+
+**Sharing and identity.** Any shared key (request coalesce, TLS/cert caches) must capture the full security context. If two requests can differ in credentials, either key on that difference or do not share at all — header *count* is not identity. Prefer "don't share" when a wrong key would leak a response across users.
+
+**Browser threat model.** Binding `127.0.0.1` is not authentication: any page the user visits can call loopback, and a bodyless `POST` skips preflight. Admin endpoints need the `local_origin_guard` Origin/Host checks; reject non-loopback hostname `Host` values (DNS rebinding). PAC stays open on purpose — never move admin routes there.
+
+**Secrets.** Redact at the write choke point (`LogStore::enqueue`), not at render time — once a credential hits `logs.db` it is permanent. When a store creates sidecar files (SQLite `-wal`/`-shm`, write temps), give them the same 0600 as the parent secret.
+
+**Atomicity and ordering.** Anything a watcher re-parses is written tmp + rename, never truncate-then-write. Multi-file entries write payload before index, so a crash cannot leave a dangling reference; updates to an entry take the write lock so they cannot resurrect a removed one.
+
+**Async lifetime.** A resource claimed for the duration of a future (in-flight map slot, denylist entry) is released on *every* exit path, including cancellation — use a `Drop` guard, not cleanup after `.await`. Cached expensive objects (per-host `rustls::ServerConfig`) and denylist entries need a TTL/size cap.
+
+**Protocol correctness.** After a 304, rebuild freshness from the **304's** headers (RFC 9111 §4.2.3); stored headers replay an elapsed `max-age` window. Honor directive *combinations* (`max-age` still applies with `immutable`). Strip hop-by-hop headers; send `Connection: close` when reading to EOF. Host extraction strips IPv6 brackets and userinfo.
+
+**Platform.** No Linux-only APIs (`/proc`); prefer POSIX-portable probes (`kill(pid, 0)`). External clients have hard constraints too (Apple rejects server certs valid > 398 days; IP-literal hosts need `iPAddress` SANs).
+
+**Timeouts.** Every network read has a deadline — a silent peer must not pin a task and its coalescing slot forever. Handshake/connect/read are bounded; an established tunnel may stay open.
+
+**Library defaults.** Do not overwrite what the library already classifies correctly (`CertificateParams::new` SAN typing). Overwriting defaults is how `https://127.0.0.1/` got a DNS-only SAN.
+
+**Regression tests.** Every bug fix ships a test that would have caught it (`tests/api_guard.rs`, `coalesce::cancelled_leader_releases_the_key`, `cache_policy::immutable_with_max_age_keeps_max_age`, `leaf_validity_is_client_acceptable`, `revalidation_restores_freshness_instead_of_staying_stale`). Name it after the failure mode.
+
+**Review checklist for a change here:** does it touch credentials, shared keys, file writes a watcher reads, network reads, or a Drop/cancellation path? Those five are where every audit finding lived.
 
 ## Smoke (manual curl)
 

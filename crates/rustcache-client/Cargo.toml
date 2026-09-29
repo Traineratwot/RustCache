@@ -1,0 +1,38 @@
+[package]
+name = "rustcache-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Cross-platform desktop client: CA install, system proxy, resilient upstream to RustCache"
+
+[[bin]]
+name = "rustcache-client"
+path = "src/main.rs"
+
+[features]
+default = []
+gui = ["dep:eframe", "dep:egui", "dep:tray-icon", "dep:image"]
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+dirs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+hex.workspace = true
+parking_lot.workspace = true
+
+# GUI (optional): tray + status window
+eframe = { version = "0.31", optional = true, default-features = true, features = ["default_fonts", "glow"] }
+egui = { version = "0.31", optional = true }
+tray-icon = { version = "0.19", optional = true }
+image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
