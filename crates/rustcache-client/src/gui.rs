@@ -29,10 +29,17 @@ pub struct GuiState {
     pub ports_line: String,
     pub discovered: Option<DiscoveredTarget>,
     pub connecting: bool,
+    /// Platform summary (e.g. `linux/kde`) and whether system proxy is supported.
+    pub platform_line: String,
+    pub sysproxy_supported: bool,
+    /// Connectivity test results (multi-line).
+    pub test_report: String,
+    pub test_running: bool,
 }
 
 impl Default for GuiState {
     fn default() -> Self {
+        let info = crate::platform::detect();
         Self {
             capture_on: false,
             mode: CaptureMode::System,
@@ -45,6 +52,10 @@ impl Default for GuiState {
             ports_line: String::new(),
             discovered: None,
             connecting: false,
+            platform_line: info.summary(),
+            sysproxy_supported: info.sysproxy_supported,
+            test_report: String::new(),
+            test_running: false,
         }
     }
 }
@@ -195,6 +206,13 @@ impl eframe::App for ClientApp {
 
             ui.separator();
             ui.heading("Capture");
+            ui.label(format!("Платформа: {}", state.platform_line));
+            if !state.sysproxy_supported {
+                ui.colored_label(
+                    egui::Color32::LIGHT_RED,
+                    "Платформа не поддерживается. Нужен Windows, macOS, GNOME или KDE. Локальный прокси: режим Off.",
+                );
+            }
             ui.horizontal(|ui| {
                 let mut on = state.capture_on;
                 if ui
@@ -222,6 +240,27 @@ impl eframe::App for ClientApp {
                 ui.colored_label(egui::Color32::LIGHT_RED, format!("capture: {e}"));
             } else {
                 ui.label(&state.status_line);
+            }
+
+            // --- Connectivity test ---
+            ui.separator();
+            ui.heading("Диагностика");
+            ui.horizontal(|ui| {
+                let busy = state.test_running;
+                if ui
+                    .add_enabled(!busy, egui::Button::new(if busy { "…" } else { "Проверить соединение" }))
+                    .clicked()
+                {
+                    self.run_connectivity_test();
+                }
+            });
+            if !state.test_report.is_empty() {
+                ui.add(
+                    egui::TextEdit::multiline(&mut state.test_report.as_str())
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(5)
+                        .font(egui::TextStyle::Monospace),
+                );
             }
 
             ui.separator();
@@ -384,6 +423,19 @@ impl ClientApp {
                     .collect();
             }
             ctx.request_repaint();
+        });
+    }
+
+    fn run_connectivity_test(&self) {
+        let gui = self.gui.clone();
+        let cfg = self.cfg.clone();
+        gui.write().test_running = true;
+        gui.write().test_report.clear();
+        self.rt.spawn(async move {
+            let report = crate::connectivity::run(&cfg, None, Some(5)).await;
+            let mut g = gui.write();
+            g.test_running = false;
+            g.test_report = report.lines.join("\n");
         });
     }
 }

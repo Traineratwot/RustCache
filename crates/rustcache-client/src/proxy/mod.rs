@@ -1,7 +1,7 @@
 //! Local resilient HTTP proxy: accepts client traffic, routes to RustCache or DIRECT.
 
-mod http_parse;
-mod relay;
+pub mod http_parse;
+pub mod relay;
 mod route;
 
 pub use http_parse::{HttpHead, parse_head};

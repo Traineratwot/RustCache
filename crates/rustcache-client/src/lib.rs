@@ -7,12 +7,16 @@ pub mod ca;
 pub mod capture;
 pub mod cli;
 pub mod config;
+pub mod connectivity;
 pub mod doctor;
 #[cfg(feature = "gui")]
 pub mod gui;
 pub mod health;
+pub mod platform;
 pub mod proxy;
 pub mod state;
 pub mod sysproxy;
+#[cfg(feature = "tun")]
+pub mod tun;
 
 pub use config::ClientConfig;

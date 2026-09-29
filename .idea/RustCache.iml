@@ -5,6 +5,8 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/rustcache-core/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/rustcache/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/rustcache/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/rustcache-client/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/rustcache-client/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

@@ -89,13 +89,15 @@ pub async fn connect_direct(mut client: TcpStream, target: &str) -> Result<()> {
 }
 
 /// Forward plain HTTP request to RustCache (absolute-URI as-is). `upstream` pre-connected.
+/// Injects the client marker so the server can identify client-originated traffic.
 pub async fn http_via_connected(
     mut client: TcpStream,
     mut upstream: TcpStream,
     head: &HttpHead,
 ) -> Result<()> {
     let _ = upstream.set_nodelay(true);
-    upstream.write_all(&head.raw).await?;
+    let marked = crate::proxy::http_parse::inject_client_marker(&head.raw);
+    upstream.write_all(&marked).await?;
     upstream.flush().await?;
     let (a, b) = tokio::io::copy_bidirectional(&mut client, &mut upstream).await?;
     tracing::debug!(a, b, "http via proxy done");

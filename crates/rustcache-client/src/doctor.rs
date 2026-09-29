@@ -17,6 +17,28 @@ pub async fn run(cfg: &ClientConfig) -> DoctorReport {
 
     let api = RustCacheApi::new(&cfg.rustcache_api).with_timeout(Duration::from_millis(800));
     lines.push(format!("api: {}", cfg.rustcache_api));
+
+    // Platform / DE
+    let info = crate::platform::detect();
+    lines.push(format!(
+        "platform: {} sysproxy={}",
+        info.summary(),
+        if info.sysproxy_supported {
+            "supported"
+        } else {
+            "unsupported"
+        }
+    ));
+    if !info.sysproxy_supported {
+        lines.push(format!(
+            "hint: {}",
+            info.unsupported_message().lines().next().unwrap_or("")
+        ));
+        lines.push(
+            "hint: run with --mode off and set http_proxy/https_proxy=127.0.0.1:31280".into(),
+        );
+    }
+
     match api.health().await {
         Ok(h) => {
             rustcache_ok = h.ok;

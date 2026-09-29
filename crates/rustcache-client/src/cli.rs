@@ -65,6 +65,21 @@ pub enum Commands {
     Status,
     /// Diagnostics
     Doctor,
+    /// Run connectivity test (direct / forced / system legs)
+    Test {
+        /// Target URL (default: http://example.com/)
+        #[arg(long)]
+        url: Option<String>,
+        /// Timeout per leg in seconds
+        #[arg(long)]
+        timeout_secs: Option<u64>,
+        /// Include HTTPS leg (marker invisible without MITM)
+        #[arg(long)]
+        https: bool,
+        /// Skip local-fixture fallback
+        #[arg(long)]
+        no_fallback: bool,
+    },
     /// Config helpers
     Config {
         #[command(subcommand)]
@@ -170,6 +185,12 @@ pub async fn execute(cli: Cli) -> Result<i32> {
         Commands::Ca { action } => cmd_ca(cfg, action).await,
         Commands::Proxy { action } => cmd_proxy(cfg, action),
         Commands::Status => cmd_status(cfg).await,
+        Commands::Test {
+            url,
+            timeout_secs,
+            https,
+            no_fallback,
+        } => cmd_test(cfg, url, timeout_secs, https, no_fallback).await,
         Commands::Doctor => {
             let rep = crate::doctor::run(&cfg).await;
             for l in &rep.lines {
@@ -225,6 +246,23 @@ async fn cmd_run(cfg: ClientConfig, mode: Option<ModeArg>, no_capture: bool) -> 
     }
 
     if mode != CaptureMode::Off {
+        // Platform gate before touching capture.
+        let info = crate::platform::detect();
+        if mode == CaptureMode::System || mode == CaptureMode::Tun {
+            if !info.sysproxy_supported && mode == CaptureMode::System {
+                eprintln!("{}", info.unsupported_message());
+                std::process::exit(exit::PLATFORM);
+            }
+            if mode == CaptureMode::Tun {
+                #[cfg(not(feature = "tun"))]
+                {
+                    eprintln!(
+                        "TUN is not compiled in. Build with: cargo build -p rustcache-client --features tun"
+                    );
+                    std::process::exit(exit::PLATFORM);
+                }
+            }
+        }
         match capture.enable(&cfg, mode) {
             Ok(msg) => tracing::info!(%msg, "capture enabled"),
             Err(e) => {
@@ -469,6 +507,11 @@ fn cmd_proxy(cfg: ClientConfig, action: ProxyAction) -> Result<i32> {
     let capture = Capture::default_store()?;
     match action {
         ProxyAction::On => {
+            let info = crate::platform::detect();
+            if !info.sysproxy_supported {
+                eprintln!("{}", info.unsupported_message());
+                return Ok(exit::PLATFORM);
+            }
             if let Some(msg) = capture.recover()? {
                 tracing::warn!(%msg, "recovered dirty state first");
             }
@@ -494,7 +537,12 @@ fn cmd_proxy(cfg: ClientConfig, action: ProxyAction) -> Result<i32> {
             }
         },
         ProxyAction::Status => {
-            println!("{}", capture.status()?);
+            let info = crate::platform::detect();
+            if !info.sysproxy_supported {
+                println!("sysproxy: unsupported ({})", info.summary());
+            } else {
+                println!("{}", capture.status()?);
+            }
             Ok(exit::OK)
         }
         ProxyAction::DryRun => {
@@ -510,6 +558,11 @@ fn cmd_proxy(cfg: ClientConfig, action: ProxyAction) -> Result<i32> {
 
 async fn cmd_status(cfg: ClientConfig) -> Result<i32> {
     let api = RustCacheApi::new(&cfg.rustcache_api);
+    let info = crate::platform::detect();
+    println!("platform: {}", info.summary());
+    if !info.sysproxy_supported {
+        println!("sysproxy: unsupported ({})", info.summary());
+    }
     match api.health().await {
         Ok(h) => {
             println!(
@@ -525,8 +578,10 @@ async fn cmd_status(cfg: ClientConfig) -> Result<i32> {
     if let Ok(ca) = crate::ca::status(&api, &cfg.ca).await {
         println!("ca: installed={}", ca.installed);
     }
-    if let Ok(sp) = crate::sysproxy::status() {
-        println!("sysproxy: {sp}");
+    if info.sysproxy_supported {
+        if let Ok(sp) = crate::sysproxy::status() {
+            println!("sysproxy: {sp}");
+        }
     }
     if let Ok(store) = StateStore::default_store() {
         if let Ok(d) = store.is_dirty() {
@@ -536,6 +591,28 @@ async fn cmd_status(cfg: ClientConfig) -> Result<i32> {
     println!("listen: {}", cfg.listen);
     println!("mode: {:?}", cfg.mode);
     Ok(exit::OK)
+}
+
+async fn cmd_test(
+    cfg: ClientConfig,
+    url: Option<String>,
+    timeout_secs: Option<u64>,
+    https: bool,
+    no_fallback: bool,
+) -> Result<i32> {
+    let _ = https; // reserved for future HTTPS leg
+    let _ = no_fallback; // fixture fallback is automatic when origin is unreachable
+    let report = crate::connectivity::run(&cfg, url.as_deref(), timeout_secs).await;
+    for line in &report.lines {
+        println!("{line}");
+    }
+    if report.passed {
+        Ok(exit::OK)
+    } else if report.legs.is_empty() {
+        Ok(exit::UNREACHABLE)
+    } else {
+        Ok(exit::GENERIC)
+    }
 }
 
 fn cmd_config(cfg: ClientConfig, path: PathBuf, action: ConfigAction) -> Result<i32> {

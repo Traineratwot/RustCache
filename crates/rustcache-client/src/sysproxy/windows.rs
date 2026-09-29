@@ -4,8 +4,11 @@ use anyhow::Result;
 use serde_json::{Value, json};
 
 use crate::ca::{ensure_success, run_cmd};
+use crate::sysproxy::handler::SysProxyHandler;
 
 const REG_PATH: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
+
+pub struct WindowsHandler;
 
 fn reg_query(name: &str) -> Option<String> {
     let out = run_cmd("reg", &["query", &format!("HKCU\\{REG_PATH}"), "/v", name]).ok()?;
@@ -120,4 +123,47 @@ pub fn dry_run(host: &str, port: u16, bypass: &[String]) -> Result<String> {
          reg add HKCU\\{REG_PATH} /v ProxyOverride /t REG_SZ /d \"{}\" /f",
         override_list.join(";")
     ))
+}
+
+impl SysProxyHandler for WindowsHandler {
+    fn id(&self) -> &'static str {
+        "windows"
+    }
+    fn snapshot(&self) -> Result<Value> {
+        snapshot()
+    }
+    fn apply(&self, host: &str, port: u16, bypass: &[String]) -> Result<String> {
+        apply(host, port, bypass)
+    }
+    fn restore(&self, prev: &Value) -> Result<String> {
+        restore(prev)
+    }
+    fn status(&self) -> Result<String> {
+        status()
+    }
+    fn dry_run(&self, host: &str, port: u16, bypass: &[String]) -> Result<String> {
+        dry_run(host, port, bypass)
+    }
+    fn current_proxy(&self) -> Result<Option<(String, u16)>> {
+        let enable = reg_query("ProxyEnable").unwrap_or_default();
+        if enable != "0x1" && enable != "1" {
+            return Ok(None);
+        }
+        let server = reg_query("ProxyServer").unwrap_or_default();
+        // ProxyServer can be "host:port" or "http=host:port;https=host:port"
+        let raw = if server.contains('=') {
+            server
+                .split(';')
+                .find_map(|p| p.strip_prefix("http="))
+                .unwrap_or(&server)
+                .to_string()
+        } else {
+            server
+        };
+        let (h, p) = crate::proxy::relay::split_host_port_with(&raw, 80)?;
+        if h.is_empty() || p == 0 {
+            return Ok(None);
+        }
+        Ok(Some((h, p)))
+    }
 }

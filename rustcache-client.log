@@ -1,0 +1,4 @@
+[2m2026-09-29T20:13:27.430461Z[0m [33m WARN[0m recovered dirty system-proxy state [3mmsg[0m[2m=[0mgnome proxy restored
+[2m2026-09-29T20:13:27.430981Z[0m [32m INFO[0m discovered RustCache [3mapi[0m[2m=[0mhttp://127.0.0.1:8080 [3mhttp[0m[2m=[0m3128 [3mhttps[0m[2m=[0m3129
+[2m2026-09-29T20:13:27.431003Z[0m [32m INFO[0m rustcache-client GUI running [3mhost[0m[2m=[0m127.0.0.1 [3mport[0m[2m=[0m31280 [3mmode[0m[2m=[0mOff
+[2m2026-09-29T20:13:27.431112Z[0m [32m INFO[0m client proxy listening [3mlocal[0m[2m=[0m127.0.0.1:31280

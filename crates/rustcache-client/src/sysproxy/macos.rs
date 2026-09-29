@@ -4,6 +4,9 @@ use anyhow::Result;
 use serde_json::{Value, json};
 
 use crate::ca::run_cmd;
+use crate::sysproxy::handler::SysProxyHandler;
+
+pub struct MacosHandler;
 
 fn services() -> Vec<String> {
     let Ok(out) = run_cmd("networksetup", &["-listallnetworkservices"]) else {
@@ -163,4 +166,43 @@ pub fn dry_run(host: &str, port: u16, bypass: &[String]) -> Result<String> {
         lines.push("# no network services found".into());
     }
     Ok(lines.join("\n"))
+}
+
+impl SysProxyHandler for MacosHandler {
+    fn id(&self) -> &'static str {
+        "macos"
+    }
+    fn snapshot(&self) -> Result<Value> {
+        snapshot()
+    }
+    fn apply(&self, host: &str, port: u16, bypass: &[String]) -> Result<String> {
+        apply(host, port, bypass)
+    }
+    fn restore(&self, prev: &Value) -> Result<String> {
+        restore(prev)
+    }
+    fn status(&self) -> Result<String> {
+        status()
+    }
+    fn dry_run(&self, host: &str, port: u16, bypass: &[String]) -> Result<String> {
+        dry_run(host, port, bypass)
+    }
+    fn current_proxy(&self) -> Result<Option<(String, u16)>> {
+        for svc in services() {
+            if let Ok(web) = get_proxy(&svc, "-getwebproxy") {
+                let en = web
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if en {
+                    let server = web.get("server").and_then(|v| v.as_str()).unwrap_or("");
+                    let port = web.get("port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+                    if !server.is_empty() && port > 0 {
+                        return Ok(Some((server.to_string(), port)));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
 }

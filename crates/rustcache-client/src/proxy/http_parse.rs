@@ -4,6 +4,10 @@ use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
+/// Marker header the client injects so the server can identify client traffic.
+pub const CLIENT_MARKER: &str = "X-RustCache-Client";
+pub const CLIENT_MARKER_VALUE: &str = "1";
+
 #[derive(Debug, Clone)]
 pub struct HttpHead {
     pub method: String,
@@ -120,6 +124,7 @@ pub fn matches_bypass(host: &str, patterns: &[String]) -> bool {
 }
 
 /// Strip hop-by-hop headers and rewrite request-line to origin-form for direct origin fetch.
+/// Injects `X-RustCache-Client: 1` after stripping any spoofed value.
 pub fn rewrite_for_origin(head: &HttpHead, host: &str) -> Result<Vec<u8>> {
     let text = String::from_utf8_lossy(&head.raw);
     let mut lines = text.split("\r\n");
@@ -158,6 +163,10 @@ pub fn rewrite_for_origin(head: &HttpHead, host: &str) -> Result<Vec<u8>> {
         ) {
             continue;
         }
+        // Strip spoofed client marker — we always inject our own.
+        if lower == CLIENT_MARKER.to_ascii_lowercase() {
+            continue;
+        }
         if lower == "host" {
             has_host = true;
         }
@@ -167,8 +176,62 @@ pub fn rewrite_for_origin(head: &HttpHead, host: &str) -> Result<Vec<u8>> {
     if !has_host {
         out.push_str(&format!("Host: {host}\r\n"));
     }
+    out.push_str(&format!("{CLIENT_MARKER}: {CLIENT_MARKER_VALUE}\r\n"));
     out.push_str("Connection: close\r\n\r\n");
     Ok(out.into_bytes())
+}
+
+/// Inject the client marker into a raw HTTP request head (for upstream forwarding).
+/// Strips any existing spoofed marker first.
+pub fn inject_client_marker(raw: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(raw);
+    let mut lines = text.split("\r\n");
+    let mut out = String::new();
+    // request-line
+    if let Some(first) = lines.next() {
+        out.push_str(first);
+        out.push_str("\r\n");
+    }
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        if let Some((k, _)) = line.split_once(':') {
+            if k.trim().eq_ignore_ascii_case(CLIENT_MARKER) {
+                continue;
+            }
+        }
+        out.push_str(line);
+        out.push_str("\r\n");
+    }
+    out.push_str(&format!("{CLIENT_MARKER}: {CLIENT_MARKER_VALUE}\r\n"));
+    out.push_str("\r\n");
+    out.into_bytes()
+}
+
+/// Returns true if the response headers include `X-RustCache-Client: 1`.
+pub fn has_client_marker(headers: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(headers);
+    text.lines().any(|l| {
+        if let Some((k, v)) = l.split_once(':') {
+            k.trim().eq_ignore_ascii_case(CLIENT_MARKER) && v.trim() == CLIENT_MARKER_VALUE
+        } else {
+            false
+        }
+    })
+}
+
+/// Extract `X-RustCache-Status` value from response headers, if present.
+pub fn rustcache_status(headers: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(headers);
+    text.lines().find_map(|l| {
+        if let Some((k, v)) = l.split_once(':') {
+            if k.trim().eq_ignore_ascii_case("X-RustCache-Status") {
+                return Some(v.trim().to_string());
+            }
+        }
+        None
+    })
 }
 
 /// Write a simple error response to the client.
@@ -231,5 +294,45 @@ mod tests {
         assert!(s.starts_with("GET /x HTTP/1.1\r\n"));
         assert!(!s.to_ascii_lowercase().contains("proxy-connection"));
         assert!(s.contains("Host: example.com"));
+    }
+
+    #[test]
+    fn rewrite_injects_client_marker() {
+        let raw = b"GET /x HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let h = parse_head_bytes(raw).unwrap();
+        let out = rewrite_for_origin(&h, "example.com").unwrap();
+        let s = String::from_utf8_lossy(&out);
+        assert!(s.contains("X-RustCache-Client: 1"));
+    }
+
+    #[test]
+    fn rewrite_strips_spoofed_marker() {
+        let raw = b"GET /x HTTP/1.1\r\nHost: example.com\r\nX-RustCache-Client: 99\r\n\r\n";
+        let h = parse_head_bytes(raw).unwrap();
+        let out = rewrite_for_origin(&h, "example.com").unwrap();
+        let s = String::from_utf8_lossy(&out);
+        assert!(s.contains("X-RustCache-Client: 1"));
+        assert!(!s.contains("X-RustCache-Client: 99"));
+    }
+
+    #[test]
+    fn inject_strips_and_replaces() {
+        let raw = b"GET http://example.com/a HTTP/1.1\r\nHost: example.com\r\nX-RustCache-Client: 42\r\nAccept: */*\r\n\r\n";
+        let out = inject_client_marker(raw);
+        let s = String::from_utf8_lossy(&out);
+        assert!(s.contains("X-RustCache-Client: 1"));
+        assert!(!s.contains("X-RustCache-Client: 42"));
+        assert!(s.contains("Accept: */*"));
+    }
+
+    #[test]
+    fn has_client_marker_detects() {
+        assert!(has_client_marker(
+            b"HTTP/1.1 200 OK\r\nX-RustCache-Client: 1\r\n\r\n"
+        ));
+        assert!(!has_client_marker(b"HTTP/1.1 200 OK\r\n\r\n"));
+        assert!(!has_client_marker(
+            b"HTTP/1.1 200 OK\r\nX-RustCache-Client: 0\r\n\r\n"
+        ));
     }
 }

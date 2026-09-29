@@ -15,7 +15,10 @@ pub struct ProxySnapshot {
     /// Platform-specific saved settings (registry values, gsettings, networksetup).
     #[serde(default)]
     pub platform: serde_json::Value,
-    /// True while system proxy is forced by us.
+    /// TUN state snapshot (iface, routes, dns_routes, old_default).
+    #[serde(default)]
+    pub tun: Option<serde_json::Value>,
+    /// True while system proxy / TUN is forced by us.
     #[serde(default)]
     pub dirty: bool,
     /// When the snapshot was taken (unix ms).
@@ -69,8 +72,18 @@ impl StateStore {
 
     /// Mark that we are about to force system proxy (persist previous platform state).
     pub fn mark_dirty(&self, platform: serde_json::Value) -> Result<()> {
+        self.mark_dirty_parts(platform, None)
+    }
+
+    /// Mark dirty with both platform and optional TUN state.
+    pub fn mark_dirty_parts(
+        &self,
+        platform: serde_json::Value,
+        tun: Option<serde_json::Value>,
+    ) -> Result<()> {
         let snap = ProxySnapshot {
             platform,
+            tun,
             dirty: true,
             ts_ms: now_ms(),
         };
