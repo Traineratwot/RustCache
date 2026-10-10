@@ -64,12 +64,31 @@ pub enum StackHandle {
 }
 
 impl StackHandle {
+    /// Stop the stack. `SIGTERM` first so `tproxy-config` can restore routes
+    /// (`TproxyState::Drop` / explicit `tproxy_remove`); `SIGKILL` only if the
+    /// helper ignores the polite signal.
     pub fn abort(&mut self) {
         match self {
             StackHandle::Task(h) => {
                 h.abort();
             }
             StackHandle::Child(c) => {
+                #[cfg(unix)]
+                {
+                    let pid = c.id();
+                    if pid != 0 {
+                        let _ = Command::new("kill")
+                            .args(["-TERM", &pid.to_string()])
+                            .status();
+                        // Give tproxy_remove time to tear down routes.
+                        for _ in 0..30 {
+                            if c.try_wait().map(|s| s.is_some()).unwrap_or(true) {
+                                return;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
+                    }
+                }
                 let _ = c.kill();
                 let _ = c.wait();
             }

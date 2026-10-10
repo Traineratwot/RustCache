@@ -5,6 +5,7 @@ pub mod certs;
 pub mod error;
 pub mod excl;
 pub mod http;
+pub mod net_bypass;
 pub mod stats;
 
 pub use error::{Error, Result};

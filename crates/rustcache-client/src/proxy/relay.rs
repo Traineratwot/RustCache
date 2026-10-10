@@ -18,10 +18,25 @@ pub enum Hop {
     Down,
 }
 
+/// Connect outbound, binding to the LAN address when known so a capture TUN
+/// (policy routing) does not re-capture the packet.
+async fn connect_outbound(addr: &str) -> std::io::Result<TcpStream> {
+    let socket = tokio::net::TcpSocket::new_v4()?;
+    #[cfg(feature = "tun")]
+    if let Some(ip) = crate::tun::bypass::lan_ip() {
+        let _ = socket.bind(std::net::SocketAddr::new(ip.into(), 0));
+    }
+    let _ = socket.set_nodelay(true);
+    let sa: std::net::SocketAddr = addr.parse().map_err(|e| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{addr}: {e}"))
+    })?;
+    socket.connect(sa).await
+}
+
 /// Try to reach the RustCache proxy port. `Down` on failure — caller falls back.
 pub async fn try_upstream(proxy_host: &str, proxy_port: u16) -> Hop {
     let addr = format!("{proxy_host}:{proxy_port}");
-    match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&addr)).await {
+    match tokio::time::timeout(CONNECT_TIMEOUT, connect_outbound(&addr)).await {
         Ok(Ok(s)) => {
             let _ = s.set_nodelay(true);
             Hop::Upstream(s)
@@ -77,7 +92,7 @@ pub async fn connect_via_connected(
 pub async fn connect_direct(mut client: TcpStream, target: &str) -> Result<()> {
     let (host, port) = split_host_port(target)?;
     let addr = format!("{host}:{port}");
-    let mut upstream = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&addr))
+    let mut upstream = tokio::time::timeout(CONNECT_TIMEOUT, connect_outbound(&addr))
         .await
         .context("direct connect timeout")?
         .with_context(|| format!("connect {addr}"))?;
@@ -115,8 +130,7 @@ pub async fn http_direct(mut client: TcpStream, head: &HttpHead) -> Result<()> {
     }
     let (host, port) = split_host_port_with(&host_hdr, 80).unwrap_or((host_hdr.clone(), 80));
     let addr = format!("{host}:{port}");
-    let mut upstream = match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&addr)).await
-    {
+    let mut upstream = match tokio::time::timeout(CONNECT_TIMEOUT, connect_outbound(&addr)).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
             write_error(&mut client, 502, &format!("origin connect: {e}")).await?;

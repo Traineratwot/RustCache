@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use anyhow::{Context, anyhow};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::TcpStream;
 
 use crate::Result;
 
@@ -80,10 +79,19 @@ impl OriginFetcher {
             .unwrap_or(if parsed.scheme == "https" { 443 } else { 80 });
         let addr = format!("{}:{}", parsed.host, port);
 
-        let stream = tokio::time::timeout(self.connect_timeout, TcpStream::connect(&addr))
-            .await
-            .map_err(|_| anyhow!("connect timeout to {addr}"))?
-            .with_context(|| format!("connect {addr}"))?;
+        // Bind to the LAN address when known so a client-side capture TUN
+        // (policy routing) does not re-capture our origin fetch.
+        let socket = crate::net_bypass::bind_lan(
+            tokio::net::TcpSocket::new_v4().map_err(|e| anyhow!("tcp socket: {e}"))?,
+        );
+        socket.set_nodelay(true).ok();
+        let stream = tokio::time::timeout(
+            self.connect_timeout,
+            socket.connect(addr.parse().map_err(|e| anyhow!("bad addr {addr}: {e}"))?),
+        )
+        .await
+        .map_err(|_| anyhow!("connect timeout to {addr}"))?
+        .with_context(|| format!("connect {addr}"))?;
         let _ = stream.set_nodelay(true);
 
         let drop_tokens = connection_tokens(req_headers);

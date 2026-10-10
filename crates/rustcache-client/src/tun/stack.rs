@@ -50,6 +50,12 @@ fn event_loop_inner(local_proxy: &str, ready: Option<ReadyTx>) -> Result<()> {
         e
     })?;
 
+    // Policy routing: packets sourced from the LAN address skip the TUN and
+    // use the real gateway. Without this, the local proxy / rustcache origin
+    // fetch is re-captured by tun2proxy → 502 routing loop.
+    let bypass = install_bypass_routing();
+    let _guard = BypassGuard(bypass);
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -171,4 +177,108 @@ fn build_args(local_proxy: &str) -> Result<Args> {
         verbosity: LevelFilter::Info,
         ..Default::default()
     })
+}
+
+/// Installs `ip rule from <lan_ip>/32 table 100` + default route in table 100.
+/// Returns `true` when the rule was installed (needs root — we run in the helper).
+fn install_bypass_routing() -> bool {
+    let Some(lan) = super::bypass::lan_ip() else {
+        tracing::warn!("no LAN IP detected — outbound may loop through TUN");
+        return false;
+    };
+    let Some(gw) = super::bypass::default_gateway() else {
+        tracing::warn!("no default gateway — cannot install bypass routing");
+        return false;
+    };
+    let Some(iface) = super::bypass::default_iface() else {
+        tracing::warn!("no default iface — cannot install bypass routing");
+        return false;
+    };
+
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("ip").args(args).output();
+        match out {
+            Ok(o) if o.status.success() => true,
+            Ok(o) => {
+                tracing::warn!(
+                    cmd = ?args,
+                    stderr = %String::from_utf8_lossy(&o.stderr),
+                    "bypass routing cmd failed"
+                );
+                false
+            }
+            Err(e) => {
+                tracing::warn!(cmd = ?args, error = %e, "bypass routing cmd failed");
+                false
+            }
+        }
+    };
+
+    let table = super::bypass::BYPASS_TABLE;
+    let ok1 = run(&[
+        "route",
+        "add",
+        "default",
+        "via",
+        &gw.to_string(),
+        "dev",
+        &iface,
+        "table",
+        table,
+    ]);
+    let ok2 = run(&[
+        "rule",
+        "add",
+        "from",
+        &format!("{lan}/32"),
+        "table",
+        table,
+        "priority",
+        "100",
+    ]);
+    // Also keep loopback + local subnet off the TUN (they hit the main table first,
+    // but be explicit so LAN peers never re-enter the capture path).
+    let ok3 = run(&[
+        "rule",
+        "add",
+        "from",
+        "127.0.0.0/8",
+        "table",
+        "main",
+        "priority",
+        "90",
+    ]);
+
+    if ok1 && ok2 {
+        tracing::info!(%lan, %gw, %iface, table, "bypass routing installed (outbound skips TUN)");
+        true
+    } else {
+        tracing::warn!(ok1, ok2, ok3, "bypass routing incomplete");
+        false
+    }
+}
+
+/// Removes the policy rules installed by [`install_bypass_routing`].
+fn remove_bypass_routing() {
+    let table = super::bypass::BYPASS_TABLE;
+    let _ = std::process::Command::new("ip")
+        .args(["rule", "del", "priority", "100"])
+        .output();
+    let _ = std::process::Command::new("ip")
+        .args(["rule", "del", "priority", "90"])
+        .output();
+    let _ = std::process::Command::new("ip")
+        .args(["route", "flush", "table", table])
+        .output();
+}
+
+/// Drop guard: always clean up policy routing when the stack stops.
+struct BypassGuard(bool);
+
+impl Drop for BypassGuard {
+    fn drop(&mut self) {
+        if self.0 {
+            remove_bypass_routing();
+        }
+    }
 }

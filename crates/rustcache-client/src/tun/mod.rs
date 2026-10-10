@@ -8,6 +8,7 @@
 //! or host-route juggling is needed. Routing (0.0.0.0/1 + 128.0.0.0/1) is
 //! installed by `tproxy-config` inside `tun2proxy::general_run_async`.
 
+pub mod bypass;
 pub mod privs;
 pub mod stack;
 
