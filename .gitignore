@@ -13,3 +13,6 @@ config.toml
 /dist/
 *.deb
 /rustcache-bin
+rustcache.log
+rustcache.pid
+rustcache-client.log

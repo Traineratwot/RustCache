@@ -1,6 +1,0 @@
-[2m2026-10-10T11:36:46.442784Z[0m [33m WARN[0m discovery failed — defaults [3merror[0m[2m=[0mconnect 127.0.0.1:8888
-[2m2026-10-10T11:36:46.442831Z[0m [32m INFO[0m rustcache-client GUI running [3mhost[0m[2m=[0m127.0.0.1 [3mport[0m[2m=[0m31280 [3mmode[0m[2m=[0mOff
-[2m2026-10-10T11:36:46.442856Z[0m [32m INFO[0m client proxy listening [3mlocal[0m[2m=[0m127.0.0.1:31280
-[2m2026-10-10T11:37:05.434935Z[0m [32m INFO[0m requesting root for TUN [3mtool[0m[2m=[0m"pkexec (enter root password in the dialog)" [3mproxy[0m[2m=[0m"127.0.0.1:31280"
-[2m2026-10-10T11:37:07.393139Z[0m [32m INFO[0m privileged TUN helper is up [3mtool[0m[2m=[0m"pkexec (enter root password in the dialog)"
-kill: (244093): Операция не позволена
