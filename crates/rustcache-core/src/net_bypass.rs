@@ -93,7 +93,21 @@ pub fn is_capture_fake_ip(ip: IpAddr) -> bool {
 /// Bind an outbound TCP socket to the LAN address so policy routing can
 /// steer it around a capture TUN. Returns the unbound `TcpSocket` when no
 /// LAN IP is known (kernel default path).
+///
+/// **Never binds for loopback destinations** — a source address on another
+/// interface cannot reach 127.0.0.1 (kernel returns EINVAL), which used to
+/// break the client→RustCache hop once `lan_ip()` started working.
 pub fn bind_lan(socket: tokio::net::TcpSocket) -> tokio::net::TcpSocket {
+    bind_lan_to(socket, None)
+}
+
+/// Like [`bind_lan`], but skips the bind when `dest` is loopback.
+pub fn bind_lan_to(socket: tokio::net::TcpSocket, dest: Option<IpAddr>) -> tokio::net::TcpSocket {
+    if let Some(d) = dest {
+        if d.is_loopback() {
+            return socket;
+        }
+    }
     match lan_ip() {
         Some(ip) => {
             if let Err(e) = socket.bind(SocketAddr::new(ip.into(), 0)) {
@@ -281,7 +295,10 @@ pub async fn connect_bypass(
     ordered.sort_by_key(|sa| if sa.is_ipv4() { 0 } else { 1 });
     for sa in ordered {
         let socket = if sa.is_ipv4() {
-            bind_lan(tokio::net::TcpSocket::new_v4().map_err(|e| anyhow!("tcp socket: {e}"))?)
+            bind_lan_to(
+                tokio::net::TcpSocket::new_v4().map_err(|e| anyhow!("tcp socket: {e}"))?,
+                Some(sa.ip()),
+            )
         } else {
             tokio::net::TcpSocket::new_v6().map_err(|e| anyhow!("tcp socket: {e}"))?
         };
@@ -401,9 +418,15 @@ async fn resolve_via_real_dns(host: &str, port: u16) -> anyhow::Result<Vec<Socke
 /// Minimal DNS client (A + AAAA) over UDP. Sends from a LAN-bound socket so
 /// the query itself is not re-captured by a TUN that has policy routing.
 async fn query_dns_a(server: IpAddr, name: &str) -> anyhow::Result<Vec<IpAddr>> {
-    let bind_ip = lan_ip()
-        .map(IpAddr::V4)
-        .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    // Loopback resolvers (127.0.0.53) must not use a LAN-bound socket — the
+    // kernel rejects that bind/connect pair (EINVAL).
+    let bind_ip = if server.is_loopback() {
+        IpAddr::V4(Ipv4Addr::LOCALHOST)
+    } else {
+        lan_ip()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+    };
     let sock = tokio::net::UdpSocket::bind(SocketAddr::new(bind_ip, 0))
         .await
         .context("dns udp bind")?;

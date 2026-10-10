@@ -25,19 +25,26 @@ async fn connect_outbound(addr: &str) -> std::io::Result<TcpStream> {
     let socket = tokio::net::TcpSocket::new_v4()?;
     #[cfg(feature = "tun")]
     let bound = {
+        // Loopback (→ RustCache 127.0.0.1:3128/3129) must NOT bind to a LAN
+        // address: the kernel rejects that bind/connect pair with EINVAL and
+        // the upstream hop dies (ERR_TOO_MANY_RETRIES in the browser).
+        let is_loopback =
+            addr.starts_with("127.") || addr.starts_with("localhost") || addr.starts_with("[::1]");
         let ip = crate::tun::bypass::lan_ip();
-        // Loopback (127.0.0.1:31280 → RustCache) never needs a LAN bind.
-        let is_loopback = addr.starts_with("127.") || addr.starts_with("localhost");
-        if let Some(ip) = ip {
-            let r = socket.bind(std::net::SocketAddr::new(ip.into(), 0));
-            if r.is_err() {
-                tracing::warn!(%ip, "relay bind_lan failed");
+        if !is_loopback {
+            if let Some(ip) = ip {
+                if let Err(e) = socket.bind(std::net::SocketAddr::new(ip.into(), 0)) {
+                    tracing::warn!(%ip, error = %e, "relay bind_lan failed");
+                }
+            } else {
+                tracing::warn!("relay: no LAN IP — DIRECT may loop via TUN");
             }
-        } else if !is_loopback {
-            tracing::warn!("relay: no LAN IP — DIRECT may loop via TUN");
         }
-        ip.map(|i| i.to_string())
-            .unwrap_or_else(|| if is_loopback { "loopback" } else { "?" }.into())
+        if is_loopback {
+            "loopback".into()
+        } else {
+            ip.map(|i| i.to_string()).unwrap_or_else(|| "?".into())
+        }
     };
     #[cfg(not(feature = "tun"))]
     let bound = "default".to_string();

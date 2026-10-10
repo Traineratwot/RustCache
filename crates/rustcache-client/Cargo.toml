@@ -13,7 +13,7 @@ path = "src/main.rs"
 [features]
 default = []
 gui = ["dep:eframe", "dep:egui", "dep:tray-icon", "dep:image"]
-tun = ["dep:tun2proxy", "dep:nix", "dep:libc"]
+tun = ["dep:tun2proxy", "dep:nix"]
 
 [dependencies]
 anyhow.workspace = true
@@ -27,6 +27,7 @@ toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 hex.workspace = true
+libc.workspace = true
 parking_lot.workspace = true
 
 # GUI (optional): tray + status window
@@ -38,7 +39,6 @@ image = { version = "0.25", optional = true, default-features = false, features 
 # TUN (optional): capture via tun2proxy (TUN → local HTTP proxy)
 tun2proxy = { version = "0.8", optional = true }
 nix = { version = "0.29", optional = true, features = ["net"] }
-libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

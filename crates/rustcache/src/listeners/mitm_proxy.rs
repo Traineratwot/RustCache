@@ -219,6 +219,7 @@ async fn handle_conn(mut client: TcpStream, state: MitmState) -> anyhow::Result<
         }
         Ok(Err(e)) => {
             state.engine.metrics().add_error();
+            tracing::warn!(%host, error = %e, "mitm tls handshake failed");
             state.note_handshake_failure(&host, &e);
             return Ok(());
         }

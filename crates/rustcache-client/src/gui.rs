@@ -67,7 +67,8 @@ pub struct GuiLaunch {
     pub cfg: ClientConfig,
     pub health: Arc<HealthMonitor>,
     pub gui: SharedGui,
-    pub on_quit: Arc<dyn Fn() + Send + Sync>,
+    /// Shared capture — quit/close/signals must disable the live TUN stack.
+    pub capture: Arc<Capture>,
     /// Tokio handle so the UI thread can spawn async work.
     pub rt: tokio::runtime::Handle,
     /// Live upstream — updated when the user connects to a host.
@@ -87,7 +88,7 @@ impl GuiLaunch {
             cfg: self.cfg,
             health: self.health,
             gui: self.gui,
-            on_quit: self.on_quit,
+            capture: self.capture,
             rt: self.rt,
             upstream: self.upstream,
             last_refresh: Instant::now() - Duration::from_secs(60),
@@ -106,7 +107,7 @@ pub fn launch(
     cfg: ClientConfig,
     health: Arc<HealthMonitor>,
     gui: SharedGui,
-    on_quit: impl Fn() + Send + Sync + 'static,
+    capture: Arc<Capture>,
 ) -> Result<()> {
     let rt = tokio::runtime::Handle::try_current()
         .map_err(|_| anyhow::anyhow!("gui::launch requires a live tokio runtime"))?;
@@ -116,7 +117,7 @@ pub fn launch(
         cfg,
         health,
         gui,
-        on_quit: Arc::new(on_quit),
+        capture,
         rt,
         upstream,
     }
@@ -127,10 +128,20 @@ struct ClientApp {
     cfg: ClientConfig,
     health: Arc<HealthMonitor>,
     gui: SharedGui,
-    on_quit: Arc<dyn Fn() + Send + Sync>,
+    capture: Arc<Capture>,
     rt: tokio::runtime::Handle,
     upstream: SharedUpstream,
     last_refresh: Instant,
+}
+
+impl ClientApp {
+    /// Disable capture (TUN first, then system proxy). Idempotent.
+    fn shutdown_capture(&self) {
+        match self.capture.disable() {
+            Ok(msg) => tracing::info!(%msg, "capture disabled"),
+            Err(e) => tracing::error!(error = %e, "capture disable failed"),
+        }
+    }
 }
 
 impl eframe::App for ClientApp {
@@ -220,7 +231,7 @@ impl eframe::App for ClientApp {
                     .changed()
                 {
                     let mode = if on { state.mode } else { CaptureMode::Off };
-                    apply_mode(&self.rt, &self.cfg, &self.gui, mode);
+                    apply_mode(&self.rt, &self.cfg, &self.gui, &self.capture, mode);
                 }
                 ui.label(format!("{:?}", state.mode));
             });
@@ -232,7 +243,7 @@ impl eframe::App for ClientApp {
                 ] {
                     let selected = state.mode == mode;
                     if ui.selectable_label(selected, label).clicked() {
-                        apply_mode(&self.rt, &self.cfg, &self.gui, mode);
+                        apply_mode(&self.rt, &self.cfg, &self.gui, &self.capture, mode);
                     }
                 }
             });
@@ -306,7 +317,7 @@ impl eframe::App for ClientApp {
 
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                 if ui.button("Quit (restores system proxy)").clicked() {
-                    (self.on_quit)();
+                    self.shutdown_capture();
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
@@ -314,23 +325,28 @@ impl eframe::App for ClientApp {
 
         ctx.request_repaint_after(Duration::from_secs(2));
     }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Covers Quit button, window X, and event-loop end. Idempotent.
+        self.shutdown_capture();
+    }
 }
 
 fn on_off(v: bool) -> &'static str {
     if v { "up" } else { "down" }
 }
 
-fn apply_mode(rt: &tokio::runtime::Handle, cfg: &ClientConfig, gui: &SharedGui, mode: CaptureMode) {
+fn apply_mode(
+    rt: &tokio::runtime::Handle,
+    cfg: &ClientConfig,
+    gui: &SharedGui,
+    capture: &Arc<Capture>,
+    mode: CaptureMode,
+) {
     let cfg = cfg.clone();
     let gui = gui.clone();
+    let capture = capture.clone();
     rt.spawn(async move {
-        let capture = match Capture::default_store() {
-            Ok(c) => c,
-            Err(e) => {
-                gui.write().last_error = Some(format!("state: {e}"));
-                return;
-            }
-        };
         let result = if mode == CaptureMode::Off {
             capture.disable()
         } else {

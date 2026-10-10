@@ -169,6 +169,12 @@ pub mod exit {
     pub const PLATFORM: i32 = 5;
 }
 
+/// Exclusive process lock for long-running client commands (`run` / `gui`).
+fn acquire_instance_lock() -> Result<crate::instance_lock::InstanceLock> {
+    let path = ClientConfig::state_dir().join("rustcache-client.lock");
+    crate::instance_lock::InstanceLock::acquire(&path)
+}
+
 pub async fn execute(cli: Cli) -> Result<i32> {
     let cfg_path = cli
         .config
@@ -185,13 +191,18 @@ pub async fn execute(cli: Cli) -> Result<i32> {
             no_capture,
             tray,
         } => {
+            // At most one client instance (proxy + GUI + capture).
+            let _lock = acquire_instance_lock()?;
             if tray {
                 return cmd_gui(cfg, mode).await;
             }
             cmd_run(cfg, mode, no_capture).await?;
             Ok(exit::OK)
         }
-        Commands::Gui { mode } => cmd_gui(cfg, mode).await,
+        Commands::Gui { mode } => {
+            let _lock = acquire_instance_lock()?;
+            cmd_gui(cfg, mode).await
+        }
         Commands::Ca { action } => cmd_ca(cfg, action).await,
         Commands::Proxy { action } => cmd_proxy(cfg, action),
         Commands::Status => cmd_status(cfg).await,
@@ -331,7 +342,7 @@ async fn cmd_run(cfg: ClientConfig, mode: Option<ModeArg>, no_capture: bool) -> 
         "rustcache-client running"
     );
 
-    // Graceful shutdown on Ctrl-C: restore system proxy.
+    // Graceful shutdown on Ctrl-C / SIGTERM: disable TUN + restore system proxy.
     let server_fut = server.clone().run();
     tokio::select! {
         res = server_fut => {
@@ -340,13 +351,26 @@ async fn cmd_run(cfg: ClientConfig, mode: Option<ModeArg>, no_capture: bool) -> 
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("signal — shutting down");
         }
+        _ = async {
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{SignalKind, signal};
+                match signal(SignalKind::terminate()) {
+                    Ok(mut term) => { term.recv().await; }
+                    Err(_) => std::future::pending::<()>().await,
+                }
+            }
+            #[cfg(not(unix))]
+            std::future::pending::<()>().await
+        } => {
+            tracing::info!("SIGTERM — shutting down");
+        }
     }
 
-    if mode != CaptureMode::Off {
-        match capture.disable() {
-            Ok(msg) => tracing::info!(%msg, "capture disabled"),
-            Err(e) => tracing::error!(error = %e, "failed to restore system proxy"),
-        }
+    // Always disable (TUN first inside `disable`) so exit cannot leave capture on.
+    match capture.disable() {
+        Ok(msg) => tracing::info!(%msg, "capture disabled"),
+        Err(e) => tracing::error!(error = %e, "failed to restore system proxy"),
     }
     Ok(())
 }
@@ -377,7 +401,9 @@ pub async fn prepare_gui(cfg: ClientConfig, mode: Option<ModeArg>) -> Result<Gui
 
         let mode = mode.map(Into::into).unwrap_or(cfg.mode);
 
-        let capture = Capture::default_store()?;
+        // Shared for the whole GUI lifetime: enable/apply_mode/quit/signals must
+        // all use the same Capture so `disable()` can abort the live TUN stack.
+        let capture = StdArc::new(Capture::default_store()?);
         if let Some(msg) = capture.recover()? {
             tracing::warn!(%msg, "recovered dirty system-proxy state");
         }
@@ -461,22 +487,50 @@ pub async fn prepare_gui(cfg: ClientConfig, mode: Option<ModeArg>) -> Result<Gui
         }
         tracing::info!(%host, port, mode = ?mode, "rustcache-client GUI running");
 
-        let capture_for_quit = Capture::default_store()?;
-        let mode_for_quit = mode;
-        let on_quit = move || {
-            if mode_for_quit != CaptureMode::Off {
-                match capture_for_quit.disable() {
-                    Ok(msg) => tracing::info!(%msg, "capture disabled on quit"),
-                    Err(e) => tracing::error!(error = %e, "restore failed"),
+        // Ctrl+C / SIGTERM while the native event loop owns the main thread:
+        // disable capture (TUN first) before exit — Drop never runs on signals.
+        {
+            let capture = capture.clone();
+            tokio::spawn(async move {
+                #[cfg(unix)]
+                {
+                    use tokio::signal::unix::{SignalKind, signal};
+                    let mut term = signal(SignalKind::terminate()).ok();
+                    let mut int = signal(SignalKind::interrupt()).ok();
+                    tokio::select! {
+                        _ = async {
+                            match term.as_mut() {
+                                Some(t) => { t.recv().await; }
+                                None => std::future::pending::<()>().await,
+                            }
+                        } => {}
+                        _ = async {
+                            match int.as_mut() {
+                                Some(i) => { i.recv().await; }
+                                None => std::future::pending::<()>().await,
+                            }
+                        } => {}
+                        _ = tokio::signal::ctrl_c() => {}
+                    }
                 }
-            }
-        };
+                #[cfg(not(unix))]
+                {
+                    let _ = tokio::signal::ctrl_c().await;
+                }
+                tracing::info!("signal — disabling capture and exiting");
+                match capture.disable() {
+                    Ok(msg) => tracing::info!(%msg, "capture disabled"),
+                    Err(e) => tracing::error!(error = %e, "capture disable failed"),
+                }
+                std::process::exit(0);
+            });
+        }
 
         Ok(GuiPrepared::Ready(Box::new(gui::GuiLaunch {
             cfg,
             health,
             gui: gui_state,
-            on_quit: StdArc::new(on_quit),
+            capture,
             rt: tokio::runtime::Handle::current(),
             upstream,
         })))

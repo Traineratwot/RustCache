@@ -3,6 +3,7 @@
 pub mod api;
 pub mod config;
 pub mod engine;
+pub mod instance_lock;
 pub mod listeners;
 pub mod startup;
 

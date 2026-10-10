@@ -175,6 +175,9 @@ fn build_args(local_proxy: &str) -> Result<Args> {
         dns: ArgDns::Virtual,
         // virtual_dns_pool defaults to 198.18.0.0/15 (Args::default)
         verbosity: LevelFilter::Info,
+        // A busy page opens dozens of parallel connections; 200 is tight
+        // enough that Chrome retries and surfaces ERR_TOO_MANY_RETRIES.
+        max_sessions: 1024,
         ..Default::default()
     })
 }

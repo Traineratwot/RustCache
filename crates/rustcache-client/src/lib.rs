@@ -12,6 +12,7 @@ pub mod doctor;
 #[cfg(feature = "gui")]
 pub mod gui;
 pub mod health;
+pub mod instance_lock;
 pub mod platform;
 pub mod proxy;
 pub mod state;

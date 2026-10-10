@@ -90,8 +90,9 @@ impl OriginFetcher {
             .find(|a| a.is_ipv4())
             .or_else(|| addrs.first().copied())
             .ok_or_else(|| anyhow!("resolve {addr}: no addresses"))?;
-        let socket = crate::net_bypass::bind_lan(
+        let socket = crate::net_bypass::bind_lan_to(
             tokio::net::TcpSocket::new_v4().map_err(|e| anyhow!("tcp socket: {e}"))?,
+            Some(sa.ip()),
         );
         socket.set_nodelay(true).ok();
         let local = socket

@@ -130,11 +130,17 @@ async fn query_real_dns(host: &str, port: u16) -> std::io::Result<Vec<std::net::
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     let servers = real_dns_servers();
-    let bind_ip = lan_ip()
-        .map(IpAddr::V4)
-        .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
     let mut last = std::io::Error::new(std::io::ErrorKind::NotFound, "no DNS servers");
     for server in servers {
+        // Loopback resolvers (127.0.0.53) must not use a LAN-bound socket —
+        // the kernel rejects that bind/connect pair (EINVAL).
+        let bind_ip = if server.is_loopback() {
+            IpAddr::V4(Ipv4Addr::LOCALHOST)
+        } else {
+            lan_ip()
+                .map(IpAddr::V4)
+                .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+        };
         let sock = match tokio::net::UdpSocket::bind(SocketAddr::new(bind_ip, 0)).await {
             Ok(s) => s,
             Err(e) => {

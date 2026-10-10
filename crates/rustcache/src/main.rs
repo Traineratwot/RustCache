@@ -115,6 +115,11 @@ async fn run(config_path: PathBuf, data_dir: Option<PathBuf>) -> anyhow::Result<
     rustcache::startup::wait_for_restart_parent();
     let mut cfg = Config::load_or_default(&config_path)?;
     cfg.apply_data_dir_override(data_dir.as_deref());
+    // One `rustcache run` per data dir. Held until process exit (including
+    // the UI self-restart path — the old process drops the lock on death).
+    let _instance = rustcache::instance_lock::InstanceLock::acquire(
+        &cfg.data_dir_path().join("rustcache.lock"),
+    )?;
     let cache_dir = cfg.cache_dir();
     let ca_dir = cfg.ca_dir();
     tracing::info!(
