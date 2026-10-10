@@ -1,16 +1,15 @@
-//! TUN TCP-only capture (feature `tun`).
+//! TUN capture (feature `tun`) via `tun2proxy`.
 //!
-//! Packets → TUN device → smoltcp (addr 198.18.0.1/15):
-//!   TCP :80  → HTTP-proxy handshake to 127.0.0.1:31280 (absolute-form)
-//!   TCP :443 → CONNECT dest to 127.0.0.1:31280
-//!   TCP other → raw splice DIRECT (fail-open)
-//!   UDP → drop
+//! Packets → TUN device → tun2proxy/ipstack → local resilient HTTP proxy
+//! (`host:port`) → RustCache or DIRECT.
 //!
-//! DNS safety: `preserve_dns_routes()` adds host-routes for resolvers
-//! through the **old** default gateway so DNS does not black-hole.
+//! DNS is virtual (fake-IP 198.18.0.0/15): tun2proxy answers resolver
+//! queries itself and passes the hostname to the proxy, so no resolv.conf
+//! or host-route juggling is needed. Routing (0.0.0.0/1 + 128.0.0.0/1) is
+//! installed by `tproxy-config` inside `tun2proxy::general_run_async`.
 
-pub mod stack;
 pub mod privs;
+pub mod stack;
 
 #[cfg(target_os = "linux")]
 pub mod linux;
@@ -22,9 +21,9 @@ pub mod windows;
 use anyhow::Result;
 use serde_json::Value;
 
-/// TUN interface address (fake-IP range, never collides with real traffic).
-pub const TUN_ADDR: &str = "198.18.0.1";
-pub const TUN_PREFIX: u8 = 15;
+/// TUN interface address reported to the UI (tproxy-config default).
+pub const TUN_ADDR: &str = "10.0.0.33";
+pub const TUN_PREFIX: u8 = 24;
 
 /// Snapshot of TUN state for dirty-recovery.
 #[derive(Debug, Clone)]
@@ -84,34 +83,32 @@ pub struct TunSession {
 /// Enable TUN capture. Returns the session (keeps the device alive).
 ///
 /// Asks for root / `CAP_NET_ADMIN` when needed and **only** reports success
-/// after the TUN device and capture routes actually exist.
+/// after the TUN device actually exists. Routing + DNS are handled inside
+/// `tun2proxy::general_run_async` (tproxy-config setup, virtual DNS).
 pub async fn enable(local_proxy: &str) -> Result<TunSession> {
     // Spawns an in-process stack when we already have CAP_NET_ADMIN, otherwise
     // elevates (`pkexec`/`sudo`) to a `tun-stack` helper that owns the device.
     let mut handle = privs::spawn_stack(local_proxy)?;
 
     // Readiness = interface actually exists. Never claim success without it.
-    if !wait_for_iface("rustcache-tun0", std::time::Duration::from_secs(5)).await {
+    if !wait_for_iface(stack::TUN_IFACE, std::time::Duration::from_secs(5)).await {
         handle.abort();
         return Err(anyhow::anyhow!(
-            "TUN device rustcache-tun0 was not created (need root / CAP_NET_ADMIN). \
-             Approve the password prompt or run the client with sudo."
+            "TUN device {} was not created (need root / CAP_NET_ADMIN). \
+             Approve the password prompt or run the client with sudo.",
+            stack::TUN_IFACE
         ));
     }
 
-    // Build a snapshot for dirty-recovery (no route commands here — event_loop does that).
+    // Snapshot for dirty-recovery. Routes are managed by tproxy-config inside
+    // the stack; we record them so disable() can clean up after a hard kill.
     let snap = TunSnapshot {
-        iface: "rustcache-tun0".into(),
+        iface: stack::TUN_IFACE.into(),
         addr: TUN_ADDR.to_string(),
         routes: vec!["0.0.0.0/1".into(), "128.0.0.0/1".into()],
         dns_routes: Vec::new(),
         old_default: get_old_default().await,
     };
-
-    // Preserve DNS routes through the old gateway.
-    let dns_routes = preserve_dns_routes(&snap).await?;
-    let mut snap = snap;
-    snap.dns_routes = dns_routes;
 
     Ok(TunSession {
         snapshot: snap,
@@ -196,27 +193,5 @@ async fn remove_interface(snap: &TunSnapshot) -> Result<String> {
     {
         let _ = snap;
         Ok("unsupported platform".into())
-    }
-}
-
-/// Add /32 host-routes for DNS resolvers through the old default gateway.
-/// Returns the list of installed DNS routes.
-async fn preserve_dns_routes(snap: &TunSnapshot) -> Result<Vec<String>> {
-    #[cfg(target_os = "linux")]
-    {
-        linux::preserve_dns_routes(snap).await
-    }
-    #[cfg(target_os = "macos")]
-    {
-        macos::preserve_dns_routes(snap).await
-    }
-    #[cfg(target_os = "windows")]
-    {
-        windows::preserve_dns_routes(snap).await
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        let _ = snap;
-        Ok(Vec::new())
     }
 }

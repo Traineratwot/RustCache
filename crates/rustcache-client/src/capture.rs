@@ -1,6 +1,9 @@
 //! Capture orchestration: system proxy on/off + dirty recovery.
 
-use anyhow::{Context as _, Result};
+#[cfg(feature = "tun")]
+use anyhow::Context as _;
+use anyhow::Result;
+#[cfg(feature = "tun")]
 use parking_lot::Mutex;
 
 use crate::config::{CaptureMode, ClientConfig};

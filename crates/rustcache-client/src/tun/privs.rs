@@ -29,15 +29,30 @@ pub fn have_tun_privileges() -> bool {
 }
 
 fn try_probe_tun() -> Result<()> {
-    use std::os::unix::io::AsRawFd;
-    let mut config = tun::Configuration::default();
-    config.tun_name("rustcache-tun-probe").up();
-    let dev = tun::create(&config).context("probe TUN")?;
-    let _ = Command::new("ip")
+    // Cheap privilege probe: `ip tuntap add` needs CAP_NET_ADMIN just like
+    // tun2proxy's device create. Avoids depending on the `tun` crate here.
+    let out = std::process::Command::new("ip")
+        .args([
+            "tuntap",
+            "add",
+            "mode",
+            "tun",
+            "name",
+            "rustcache-tun-probe",
+        ])
+        .output()
+        .context("ip tuntap add")?;
+    let _ = std::process::Command::new("ip")
         .args(["link", "del", "rustcache-tun-probe"])
         .output();
-    let _ = dev.as_raw_fd();
-    Ok(())
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "ip tuntap add: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
 }
 
 /// Handle to a running TUN stack (in-process task or privileged helper).
@@ -86,23 +101,30 @@ pub fn spawn_stack(local_proxy: &str) -> Result<StackHandle> {
 
 /// Ask for root and run `rustcache-client tun-stack --proxy host:port`.
 ///
-/// Order: `sudo -n` (fail-fast when a password would be required) → `pkexec`
-/// (GUI dialog) → interactive `sudo`. A helper that exits before creating the
-/// device is treated as a failed elevation — we fall through to the next one
-/// instead of returning a "started" handle for a dead child.
+/// Order: `pkexec` (GUI password dialog — what the user expects to see) →
+/// `sudo -n` (fail-fast, works for NOPASSWD sudoers) → interactive `sudo`.
+/// A helper that exits before creating the device is treated as a failed
+/// elevation — we fall through to the next one instead of returning a
+/// "started" handle for a dead child.
 pub fn spawn_privileged_helper(local_proxy: &str) -> Result<StackHandle> {
     let exe = std::env::current_exe().context("current_exe")?;
     let exe_s = exe.to_string_lossy().to_string();
     let mut last_err = String::new();
 
-    // (tool, args-before-exe, human label)
-    let methods: [(&str, Vec<String>, &str); 3] = [
-        ("sudo", vec!["-n".into()], "sudo -n"),
-        ("pkexec", vec![], "pkexec (enter root password in the dialog)"),
-        ("sudo", vec![], "sudo"),
+    // (tool, args-before-exe, human label, ready grace)
+    // Interactive methods get a long grace — the user is typing a password.
+    let methods: [(&str, Vec<String>, &str, u64); 3] = [
+        (
+            "pkexec",
+            vec![],
+            "pkexec (enter root password in the dialog)",
+            60,
+        ),
+        ("sudo", vec!["-n".into()], "sudo -n", 5),
+        ("sudo", vec![], "sudo", 60),
     ];
 
-    for (tool, pre_args, label) in methods {
+    for (tool, pre_args, label, grace_secs) in methods {
         let mut cmd = Command::new(tool);
         cmd.args(&pre_args)
             .arg(&exe_s)
@@ -127,7 +149,7 @@ pub fn spawn_privileged_helper(local_proxy: &str) -> Result<StackHandle> {
 
         // Give the helper a moment to create the device — or die if elevation
         // was denied / the tool exited immediately.
-        match wait_child_ready(&mut child, std::time::Duration::from_secs(2)) {
+        match wait_child_ready(&mut child, std::time::Duration::from_secs(grace_secs)) {
             Ok(()) => {
                 tracing::info!(tool = label, "privileged TUN helper is up");
                 return Ok(StackHandle::Child(child));
@@ -149,8 +171,9 @@ pub fn spawn_privileged_helper(local_proxy: &str) -> Result<StackHandle> {
     )
 }
 
-/// Wait until the helper is clearly alive: either the TUN iface exists or the
-/// process is still running after a short grace period.
+/// Wait until the helper has created the TUN device. Returns `Err` when the
+/// process exits early or the device never appears — never report "up"
+/// without a live interface.
 fn wait_child_ready(child: &mut Child, grace: std::time::Duration) -> Result<()> {
     let deadline = std::time::Instant::now() + grace;
     loop {
@@ -163,8 +186,7 @@ fn wait_child_ready(child: &mut Child, grace: std::time::Duration) -> Result<()>
                     return Ok(());
                 }
                 if std::time::Instant::now() >= deadline {
-                    // Still running but no iface yet — let enable() finish the wait.
-                    return Ok(());
+                    bail!("helper running but rustcache-tun0 never appeared");
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
@@ -200,7 +222,10 @@ pub fn install_file_caps() -> Result<String> {
             }
         }
     }
-    bail!("setcap failed (need root). Manually: sudo setcap {caps} {}", exe.display())
+    bail!(
+        "setcap failed (need root). Manually: sudo setcap {caps} {}",
+        exe.display()
+    )
 }
 
 #[cfg(test)]
