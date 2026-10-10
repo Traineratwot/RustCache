@@ -28,15 +28,34 @@ use crate::listeners::{
 /// caching — for that host until the process restarted.
 const DENYLIST_TTL_MS: u64 = 5 * 60 * 1000;
 
+/// Consecutive non-abort handshake failures before a host is denylisted.
+/// A single cancelled preconnect must not disable MITM; a TLS-pinned app
+/// that always rejects our leaf still gets spliced after a few strikes.
+const HANDSHAKE_STRIKES_TO_DENY: u32 = 3;
+
 pub struct MitmState {
     pub engine: SharedEngine,
     pub leaves: Arc<LeafIssuer>,
     /// host → unix millis when it was denylisted.
     pub denylist: Arc<dashmap::DashMap<String, u64>>,
+    /// host → consecutive non-abort handshake failures (cleared on success).
+    pub handshake_strikes: Arc<dashmap::DashMap<String, u32>>,
     /// host → ready-to-use rustls config. Building one means parsing the leaf
     /// PEM and validating the key, which is far too expensive to redo on every
     /// CONNECT (the MITM path serves one request per TLS connection).
     pub tls_configs: Arc<dashmap::DashMap<String, Arc<rustls::ServerConfig>>>,
+}
+
+/// True when the client hung up mid-handshake (preconnect, tab close, early
+/// abort after seeing the cert). Those must not disable MITM for the host.
+fn is_client_abort(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::BrokenPipe
+    )
 }
 
 /// Bounded like the leaf cache: drop everything when full rather than track LRU.
@@ -56,7 +75,30 @@ impl MitmState {
     }
 
     fn denylist(&self, host: &str) {
+        self.handshake_strikes.remove(host);
         self.denylist.insert(host.to_string(), now_ms());
+    }
+
+    /// Record a handshake failure; denylist only after repeated non-aborts.
+    fn note_handshake_failure(&self, host: &str, err: &std::io::Error) {
+        if is_client_abort(err) {
+            tracing::debug!(%host, error = %err, "mitm handshake aborted by client (ignored)");
+            return;
+        }
+        let mut strikes = self.handshake_strikes.entry(host.to_string()).or_insert(0);
+        *strikes += 1;
+        let n = *strikes;
+        if n >= HANDSHAKE_STRIKES_TO_DENY {
+            drop(strikes);
+            tracing::debug!(%host, strikes = n, "mitm denylist after repeated handshake failures");
+            self.denylist(host);
+        } else {
+            tracing::debug!(%host, strikes = n, error = %err, "mitm tls accept failed");
+        }
+    }
+
+    fn note_handshake_success(&self, host: &str) {
+        self.handshake_strikes.remove(host);
     }
 
     /// Cached rustls config for `host`, built from a freshly issued leaf on miss.
@@ -90,6 +132,7 @@ pub async fn serve(
     let addr = listener.local_addr()?;
     tracing::info!(%addr, "https mitm listening");
     let denylist = Arc::new(dashmap::DashMap::new());
+    let handshake_strikes = Arc::new(dashmap::DashMap::new());
     let tls_configs = Arc::new(dashmap::DashMap::new());
     loop {
         let (stream, peer) = listener.accept().await?;
@@ -97,6 +140,7 @@ pub async fn serve(
             engine: engine.clone(),
             leaves: leaves.clone(),
             denylist: denylist.clone(),
+            handshake_strikes: handshake_strikes.clone(),
             tls_configs: tls_configs.clone(),
         };
         tokio::spawn(async move {
@@ -117,6 +161,7 @@ pub async fn serve_connection(
         engine,
         leaves,
         denylist: Arc::new(dashmap::DashMap::new()),
+        handshake_strikes: Arc::new(dashmap::DashMap::new()),
         tls_configs: Arc::new(dashmap::DashMap::new()),
     };
     handle_conn(stream, state).await
@@ -168,11 +213,13 @@ async fn handle_conn(mut client: TcpStream, state: MitmState) -> anyhow::Result<
     let acceptor = tokio_rustls::TlsAcceptor::from(cfg);
     let accept = tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(client));
     let mut tls_stream = match accept.await {
-        Ok(Ok(s)) => s,
+        Ok(Ok(s)) => {
+            state.note_handshake_success(&host);
+            s
+        }
         Ok(Err(e)) => {
             state.engine.metrics().add_error();
-            state.denylist(&host);
-            tracing::debug!(%host, error = %e, "mitm tls accept failed");
+            state.note_handshake_failure(&host, &e);
             return Ok(());
         }
         Err(_) => {
@@ -238,7 +285,15 @@ async fn handle_mitm_request<W: AsyncWriteExt + Unpin>(
         started: std::time::Instant::now(),
     };
     let out = resolve_cached(&state.engine, &ctx, Some(upstream_tls_connector())).await?;
-    write_http_response(stream, out.status, &out.headers, &out.body, true).await
+    write_http_response(
+        stream,
+        out.status,
+        &out.headers,
+        &out.body,
+        out.resp_bytes as usize,
+        true,
+    )
+    .await
 }
 
 async fn splice_raw(
@@ -301,4 +356,42 @@ fn pem_to_der_key(pem: &str) -> anyhow::Result<PrivateKeyDer<'static>> {
     let key = rustls_pemfile::private_key(&mut reader)?
         .ok_or_else(|| anyhow::anyhow!("no private key in pem"))?;
     Ok(key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn io_err(kind: std::io::ErrorKind, msg: &str) -> std::io::Error {
+        std::io::Error::new(kind, msg)
+    }
+
+    #[test]
+    fn client_abort_eof_is_not_a_deny_reason() {
+        // tokio-rustls surfaces cancelled handshakes as UnexpectedEof / "tls handshake eof"
+        assert!(is_client_abort(&io_err(
+            std::io::ErrorKind::UnexpectedEof,
+            "tls handshake eof"
+        )));
+        assert!(is_client_abort(&io_err(
+            std::io::ErrorKind::ConnectionReset,
+            "connection reset"
+        )));
+        assert!(is_client_abort(&io_err(
+            std::io::ErrorKind::BrokenPipe,
+            "broken pipe"
+        )));
+    }
+
+    #[test]
+    fn real_handshake_errors_are_not_client_aborts() {
+        assert!(!is_client_abort(&io_err(
+            std::io::ErrorKind::InvalidData,
+            "invalid peer certificate: UnknownIssuer"
+        )));
+        assert!(!is_client_abort(&io_err(
+            std::io::ErrorKind::TimedOut,
+            "deadline elapsed"
+        )));
+    }
 }

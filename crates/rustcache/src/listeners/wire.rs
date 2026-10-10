@@ -156,20 +156,25 @@ pub fn reason_phrase(status: u16) -> &'static str {
 /// Write one HTTP/1.1 response to `w`.
 ///
 /// Single writer for every listener: strips `Transfer-Encoding` (bodies are
-/// fully buffered), ensures a `Content-Length` is present, and when `close` is
-/// set replaces any origin `Connection` value with `Connection: close`.
+/// fully buffered), always emits `Content-Length: entity_len` (the logical GET
+/// size — HEAD sends headers only but still reports the full length), and when
+/// `close` is set replaces any origin `Connection` value with `Connection: close`.
 pub async fn write_http_response<W: AsyncWriteExt + Unpin>(
     w: &mut W,
     status: u16,
     headers: &[(String, String)],
     body: &[u8],
+    entity_len: usize,
     close: bool,
 ) -> anyhow::Result<()> {
     let reason = reason_phrase(status);
     let mut out = format!("HTTP/1.1 {status} {reason}\r\n");
-    let mut has_cl = false;
     for (k, v) in headers {
         if k.eq_ignore_ascii_case("transfer-encoding") {
+            continue;
+        }
+        // Replaced below from `entity_len` so HEAD can report the full size.
+        if k.eq_ignore_ascii_case("content-length") {
             continue;
         }
         if k.eq_ignore_ascii_case("connection") {
@@ -182,17 +187,12 @@ pub async fn write_http_response<W: AsyncWriteExt + Unpin>(
             out.push_str("\r\n");
             continue;
         }
-        if k.eq_ignore_ascii_case("content-length") {
-            has_cl = true;
-        }
         out.push_str(k);
         out.push_str(": ");
         out.push_str(v);
         out.push_str("\r\n");
     }
-    if !has_cl {
-        out.push_str(&format!("Content-Length: {}\r\n", body.len()));
-    }
+    out.push_str(&format!("Content-Length: {entity_len}\r\n"));
     if close {
         out.push_str("Connection: close\r\n");
     }
@@ -315,5 +315,36 @@ mod tests {
         let now = rustcache_core::cache::meta::now_ms();
         assert_eq!(entry_age_secs(now), 0);
         assert_eq!(entry_age_secs(now.saturating_sub(2500)), 2);
+    }
+
+    /// HEAD must report the full entity length, not the empty body size.
+    #[tokio::test]
+    async fn write_http_response_head_uses_entity_len_not_body() {
+        let mut buf = Vec::new();
+        let headers = vec![
+            ("Content-Type".into(), "text/css".into()),
+            ("Transfer-Encoding".into(), "chunked".into()),
+        ];
+        write_http_response(&mut buf, 200, &headers, b"", 1861, true)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&buf);
+        assert!(text.contains("Content-Length: 1861\r\n"), "{text}");
+        assert!(
+            !text.to_ascii_lowercase().contains("transfer-encoding"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_http_response_overrides_stale_content_length() {
+        let mut buf = Vec::new();
+        let headers = vec![("Content-Length".into(), "0".into())];
+        write_http_response(&mut buf, 200, &headers, b"abcd", 4, true)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&buf);
+        assert_eq!(text.matches("Content-Length:").count(), 1);
+        assert!(text.contains("Content-Length: 4\r\n"), "{text}");
     }
 }

@@ -120,5 +120,13 @@ async fn handle_absolute(
         started: Instant::now(),
     };
     let out = resolve_cached(&engine, &ctx, Some(upstream_tls_connector())).await?;
-    write_http_response(stream, out.status, &out.headers, &out.body, true).await
+    write_http_response(
+        stream,
+        out.status,
+        &out.headers,
+        &out.body,
+        out.resp_bytes as usize,
+        true,
+    )
+    .await
 }

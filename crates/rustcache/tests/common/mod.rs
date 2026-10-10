@@ -28,6 +28,9 @@ pub struct OriginState {
     /// `max-age` is measured from it, so tests about freshness need it.
     pub date: RwLock<Option<String>>,
     pub delay_ms: AtomicU64,
+    /// When true, respond with `Transfer-Encoding: chunked` and no
+    /// `Content-Length` (reproduces the HEAD entity-length bug).
+    pub chunked: AtomicUsize, // 0 = off, 1 = on
 }
 
 impl OriginState {
@@ -40,6 +43,7 @@ impl OriginState {
             etag: RwLock::new(None),
             date: RwLock::new(None),
             delay_ms: AtomicU64::new(0),
+            chunked: AtomicUsize::new(0),
         })
     }
 
@@ -126,9 +130,20 @@ async fn handle_origin_conn(sock: &mut TcpStream, st: Arc<OriginState>) -> anyho
         let cc = st.cache_control.read().unwrap().clone();
         let date = st.date.read().unwrap().clone();
         let body = st.body.read().unwrap().clone();
+        let chunked = st.chunked.load(Ordering::SeqCst) != 0;
 
         if method.eq_ignore_ascii_case("HEAD") {
-            write_origin(sock, 200, &cc, etag.as_deref(), date.as_deref(), b"").await?;
+            // Report the full GET entity length, as a real origin would.
+            write_origin_with(
+                sock,
+                200,
+                &cc,
+                etag.as_deref(),
+                date.as_deref(),
+                &body,
+                chunked,
+            )
+            .await?;
             continue;
         }
 
@@ -143,7 +158,16 @@ async fn handle_origin_conn(sock: &mut TcpStream, st: Arc<OriginState>) -> anyho
             }
         }
 
-        write_origin(sock, 200, &cc, etag.as_deref(), date.as_deref(), &body).await?;
+        write_origin_with(
+            sock,
+            200,
+            &cc,
+            etag.as_deref(),
+            date.as_deref(),
+            &body,
+            chunked,
+        )
+        .await?;
     }
 }
 
@@ -155,10 +179,28 @@ async fn write_origin(
     date: Option<&str>,
     body: &[u8],
 ) -> anyhow::Result<()> {
-    let mut head = format!(
-        "HTTP/1.1 {status} OK\r\nCache-Control: {cache_control}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n",
-        body.len()
-    );
+    write_origin_with(sock, status, cache_control, etag, date, body, false).await
+}
+
+async fn write_origin_with(
+    sock: &mut TcpStream,
+    status: u16,
+    cache_control: &str,
+    etag: Option<&str>,
+    date: Option<&str>,
+    body: &[u8],
+    chunked: bool,
+) -> anyhow::Result<()> {
+    let mut head = if chunked {
+        format!(
+            "HTTP/1.1 {status} OK\r\nCache-Control: {cache_control}\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n"
+        )
+    } else {
+        format!(
+            "HTTP/1.1 {status} OK\r\nCache-Control: {cache_control}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n",
+            body.len()
+        )
+    };
     if let Some(t) = etag {
         head.push_str(&format!("ETag: {t}\r\n"));
     }
@@ -167,7 +209,14 @@ async fn write_origin(
     }
     head.push_str("\r\n");
     sock.write_all(head.as_bytes()).await?;
-    sock.write_all(body).await?;
+    if chunked {
+        sock.write_all(format!("{:x}\r\n", body.len()).as_bytes())
+            .await?;
+        sock.write_all(body).await?;
+        sock.write_all(b"\r\n0\r\n\r\n").await?;
+    } else {
+        sock.write_all(body).await?;
+    }
     sock.flush().await?;
     Ok(())
 }
@@ -302,8 +351,24 @@ pub async fn proxy_get_full(
     proxy: SocketAddr,
     url: &str,
 ) -> std::io::Result<(u16, Vec<(String, String)>, Vec<u8>)> {
+    proxy_request_full(proxy, "GET", url).await
+}
+
+/// Send one absolute-form HEAD request through the proxy.
+pub async fn proxy_head_full(
+    proxy: SocketAddr,
+    url: &str,
+) -> std::io::Result<(u16, Vec<(String, String)>, Vec<u8>)> {
+    proxy_request_full(proxy, "HEAD", url).await
+}
+
+async fn proxy_request_full(
+    proxy: SocketAddr,
+    method: &str,
+    url: &str,
+) -> std::io::Result<(u16, Vec<(String, String)>, Vec<u8>)> {
     let mut sock = TcpStream::connect(proxy).await?;
-    let req = format!("GET {url} HTTP/1.1\r\nHost: origin\r\nConnection: close\r\n\r\n");
+    let req = format!("{method} {url} HTTP/1.1\r\nHost: origin\r\nConnection: close\r\n\r\n");
     sock.write_all(req.as_bytes()).await?;
     sock.flush().await?;
     let mut buf = Vec::new();

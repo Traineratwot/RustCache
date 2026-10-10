@@ -108,17 +108,32 @@ async fn resolve_bypass(
         Ok(r) => {
             let headers = cache_headers(&r.headers, "BYPASS", None);
             let body = client_body(&ctx.method, &r.body);
+            // HEAD / 204 / 304 fetch as an empty body; keep the logical size
+            // so Content-Length still describes the entity GET would return.
+            let entity = if r.body.is_empty() {
+                content_length_header(&r.headers).unwrap_or(0)
+            } else {
+                r.body.len() as u64
+            };
             engine.metrics().add_served(body.len() as u64);
             CacheOutcome {
                 status: r.status,
                 headers,
                 body,
                 outcome: Outcome::Bypass,
-                resp_bytes: r.body.len() as u64,
+                resp_bytes: entity,
             }
         }
         Err(e) => error_outcome(engine, &e.to_string()),
     }
+}
+
+/// `Content-Length` value from response headers, if present and parseable.
+fn content_length_header(headers: &[(String, String)]) -> Option<u64> {
+    headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, v)| v.trim().parse().ok())
 }
 
 /// Cache lookup → Hit / Revalidate / Miss for GET and HEAD.
