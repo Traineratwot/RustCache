@@ -102,6 +102,80 @@ impl Drop for StackHandle {
     }
 }
 
+/// Ask for root and run `rustcache-client tun-teardown`.
+///
+/// Same elevation order as [`spawn_privileged_helper`]. Runs to completion
+/// (the helper exits after restoring) — no handle to keep.
+pub fn spawn_teardown() -> Result<Vec<String>> {
+    let exe = std::env::current_exe().context("current_exe")?;
+    let exe_s = exe.to_string_lossy().to_string();
+    let mut last_err = String::new();
+
+    // (tool, args-before-exe, human label, grace)
+    let methods: [(&str, Vec<String>, &str, u64); 3] = [
+        ("pkexec", vec![], "pkexec (enter root password in the dialog)", 60),
+        ("sudo", vec!["-n".into()], "sudo -n", 10),
+        ("sudo", vec![], "sudo", 60),
+    ];
+
+    for (tool, pre_args, label, grace_secs) in methods {
+        let mut cmd = Command::new(tool);
+        cmd.args(&pre_args)
+            .arg(&exe_s)
+            .arg("tun-teardown")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit());
+
+        tracing::info!(tool = label, "requesting root for TUN teardown");
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                last_err = format!("{tool}: {e}");
+                continue;
+            }
+        };
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(grace_secs);
+        let mut exited = None;
+        loop {
+            match child.try_wait() {
+                Ok(Some(s)) => {
+                    exited = Some(s);
+                    break;
+                }
+                Ok(None) if std::time::Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    last_err = format!("{label}: timeout");
+                    break;
+                }
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                Err(e) => {
+                    last_err = format!("{label}: {e}");
+                    break;
+                }
+            }
+        }
+
+        match exited {
+            Some(s) if s.success() => {
+                tracing::info!(tool = label, "tun teardown done");
+                return Ok(vec!["tun teardown completed".into()]);
+            }
+            Some(s) => {
+                last_err = format!("{label}: exit {s}");
+                tracing::warn!(tool = label, %last_err, "teardown attempt failed, trying next");
+            }
+            None => {
+                tracing::warn!(tool = label, %last_err, "teardown attempt failed, trying next");
+            }
+        }
+    }
+
+    bail!("TUN teardown needs root — no elevation method worked ({last_err}). Run: sudo {} tun-teardown", exe.display())
+}
+
 /// Start the TUN stack, elevating to root when this process cannot create the device.
 ///
 /// Returns after the caller has been given a handle; readiness is still

@@ -11,6 +11,7 @@
 pub mod bypass;
 pub mod privs;
 pub mod stack;
+pub mod teardown;
 
 #[cfg(target_os = "linux")]
 pub mod linux;

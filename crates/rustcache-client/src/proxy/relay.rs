@@ -27,9 +27,13 @@ async fn connect_outbound(addr: &str) -> std::io::Result<TcpStream> {
         let _ = socket.bind(std::net::SocketAddr::new(ip.into(), 0));
     }
     let _ = socket.set_nodelay(true);
-    let sa: std::net::SocketAddr = addr.parse().map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{addr}: {e}"))
-    })?;
+    // Resolve first — TcpSocket::connect needs a SocketAddr, not a hostname.
+    let sa = tokio::net::lookup_host(addr)
+        .await?
+        .next()
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, format!("resolve {addr}"))
+        })?;
     socket.connect(sa).await
 }
 

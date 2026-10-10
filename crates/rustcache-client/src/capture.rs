@@ -88,15 +88,22 @@ impl Capture {
             if let Some(mut handle) = self.tun.lock().take() {
                 handle.abort();
             }
-            let snap = self.store.load()?;
-            if let Some(ref tun_json) = snap.tun {
-                if let Some(tun_snap) = crate::tun::TunSnapshot::from_json(tun_json) {
-                    let _ = tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(crate::tun::disable(&tun_snap))
-                    });
+            // The helper's tproxy_remove only runs on clean exit; if it was
+            // killed or crashed, routes + the resolv.conf bind-mount survive
+            // and the internet stays dead. Always force-restore as root.
+            let steps = match crate::tun::privs::spawn_teardown() {
+                Ok(steps) => steps,
+                Err(e) => {
+                    tracing::warn!(error = %e, "tun teardown elevation failed");
+                    vec![format!("teardown skipped: {e:#}")]
                 }
-            }
+            };
+            let _ = self.store.clear_tun();
+            let joined = steps.join("; ");
+            let sys = crate::sysproxy::disable(&self.store)?;
+            Ok(format!("{joined}; {sys}"))
         }
+        #[cfg(not(feature = "tun"))]
         crate::sysproxy::disable(&self.store)
     }
 

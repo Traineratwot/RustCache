@@ -96,6 +96,14 @@ impl StateStore {
         self.save(&snap)
     }
 
+    /// Drop the TUN snapshot (called after teardown — the device is gone).
+    pub fn clear_tun(&self) -> Result<()> {
+        let mut snap = self.load().unwrap_or_default();
+        snap.tun = None;
+        snap.dirty = false;
+        self.save(&snap)
+    }
+
     pub fn is_dirty(&self) -> Result<bool> {
         Ok(self.load()?.dirty)
     }

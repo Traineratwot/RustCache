@@ -229,24 +229,24 @@ fn install_bypass_routing() -> bool {
     let ok2 = run(&[
         "rule",
         "add",
+        "priority",
+        "100",
         "from",
         &format!("{lan}/32"),
         "table",
         table,
-        "priority",
-        "100",
     ]);
-    // Also keep loopback + local subnet off the TUN (they hit the main table first,
-    // but be explicit so LAN peers never re-enter the capture path).
+    // Also keep loopback off the TUN (it hits the main table first, but be
+    // explicit so local peers never re-enter the capture path).
     let ok3 = run(&[
         "rule",
         "add",
+        "priority",
+        "90",
         "from",
         "127.0.0.0/8",
         "table",
         "main",
-        "priority",
-        "90",
     ]);
 
     if ok1 && ok2 {

@@ -85,13 +85,17 @@ impl OriginFetcher {
             tokio::net::TcpSocket::new_v4().map_err(|e| anyhow!("tcp socket: {e}"))?,
         );
         socket.set_nodelay(true).ok();
-        let stream = tokio::time::timeout(
-            self.connect_timeout,
-            socket.connect(addr.parse().map_err(|e| anyhow!("bad addr {addr}: {e}"))?),
-        )
-        .await
-        .map_err(|_| anyhow!("connect timeout to {addr}"))?
-        .with_context(|| format!("connect {addr}"))?;
+        // Resolve first — TcpSocket::connect needs a SocketAddr, not a hostname.
+        let mut addrs = tokio::net::lookup_host(&addr)
+            .await
+            .with_context(|| format!("resolve {addr}"))?;
+        let sa = addrs
+            .next()
+            .ok_or_else(|| anyhow!("resolve {addr}: no addresses"))?;
+        let stream = tokio::time::timeout(self.connect_timeout, socket.connect(sa))
+            .await
+            .map_err(|_| anyhow!("connect timeout to {addr}"))?
+            .with_context(|| format!("connect {addr}"))?;
         let _ = stream.set_nodelay(true);
 
         let drop_tokens = connection_tokens(req_headers);

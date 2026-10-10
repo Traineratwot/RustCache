@@ -92,6 +92,9 @@ pub enum Commands {
         #[arg(long)]
         proxy: String,
     },
+    /// Force-restore the network after TUN capture (internal — launched via pkexec/sudo)
+    #[command(hide = true)]
+    TunTeardown,
 }
 
 #[derive(Subcommand, Debug)]
@@ -211,6 +214,7 @@ pub async fn execute(cli: Cli) -> Result<i32> {
         }
         Commands::Config { action } => cmd_config(cfg, cfg_path, action),
         Commands::TunStack { proxy } => cmd_tun_stack(proxy),
+        Commands::TunTeardown => cmd_tun_teardown(),
     }
 }
 
@@ -226,6 +230,22 @@ fn cmd_tun_stack(proxy: String) -> Result<i32> {
     #[cfg(not(feature = "tun"))]
     {
         let _ = proxy;
+        bail!("TUN is not compiled in (build with --features tun)")
+    }
+}
+
+/// Privileged helper: force-restore the network (routes, rules, resolv.conf).
+fn cmd_tun_teardown() -> Result<i32> {
+    #[cfg(feature = "tun")]
+    {
+        let steps = crate::tun::teardown::force_restore()?;
+        for s in &steps {
+            tracing::info!(%s, "tun teardown");
+        }
+        Ok(exit::OK)
+    }
+    #[cfg(not(feature = "tun"))]
+    {
         bail!("TUN is not compiled in (build with --features tun)")
     }
 }
