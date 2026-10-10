@@ -297,10 +297,84 @@ fn ip_str(ip: Ipv4Address) -> String {
     format!("{}.{}.{}.{}", o[0], o[1], o[2], o[3])
 }
 
+/// Host-route each DNS resolver via the real default gateway so lookups do
+/// not black-hole into the TUN. Must run with CAP_NET_ADMIN (the helper).
+fn preserve_dns_via_gateway() {
+    let gw = default_gateway();
+    let Some(gw) = gw else {
+        tracing::warn!("no default gateway — cannot preserve DNS routes");
+        return;
+    };
+    for dns in resolvers() {
+        let route = format!("{dns}/32");
+        let out = std::process::Command::new("ip")
+            .args(["route", "add", &route, "via", &gw])
+            .output();
+        match out {
+            Ok(o) if o.status.success() => {
+                tracing::info!(%route, %gw, "DNS host-route via gateway");
+            }
+            Ok(o) => {
+                let err = String::from_utf8_lossy(&o.stderr);
+                // Already exists is fine.
+                if !err.contains("File exists") {
+                    tracing::warn!(%route, stderr = %err.trim(), "DNS route add failed");
+                }
+            }
+            Err(e) => tracing::warn!(%route, error = %e, "DNS route add failed"),
+        }
+    }
+}
+
+fn default_gateway() -> Option<String> {
+    let out = std::process::Command::new("ip")
+        .args(["route", "show", "default"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    for line in text.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if let Some(idx) = parts.iter().position(|&p| p == "via") {
+            if let Some(gw) = parts.get(idx + 1) {
+                return Some(gw.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn resolvers() -> Vec<String> {
+    let mut v = Vec::new();
+    if let Ok(text) = std::fs::read_to_string("/etc/resolv.conf") {
+        for line in text.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("nameserver") {
+                let ip = rest.trim();
+                if !ip.is_empty() && !v.contains(&ip.to_string()) {
+                    v.push(ip.to_string());
+                }
+            }
+        }
+    }
+    v
+}
+
 // ──────────────────────────── event loop ────────────────────────────
 
 /// Run the TUN TCP stack (blocking; call from `spawn_blocking`).
-pub fn event_loop(local_proxy: &str) -> Result<()> {
+///
+/// `ready` is signalled once with `Ok(())` after the device + routes exist,
+/// or `Err(msg)` if setup failed — so [`super::enable`] does not report
+/// success for a device that was never created.
+pub fn event_loop(
+    local_proxy: &str,
+    mut ready: Option<std::sync::mpsc::Sender<std::result::Result<(), String>>>,
+) -> Result<()> {
+    let mut report = |r: std::result::Result<(), String>| {
+        if let Some(tx) = ready.take() {
+            let _ = tx.send(r);
+        }
+    };
     // 1. Create TUN device (sync — we're in spawn_blocking).
     let mut config = tun::Configuration::default();
     config
@@ -308,7 +382,14 @@ pub fn event_loop(local_proxy: &str) -> Result<()> {
         .address("198.18.0.1")
         .netmask("255.255.0.0")
         .up();
-    let tun_dev = tun::create(&config).context("create TUN device")?;
+    let tun_dev = match tun::create(&config) {
+        Ok(d) => d,
+        Err(e) => {
+            let msg = format!("{e:#}");
+            report(Err(msg.clone()));
+            return Err(anyhow::anyhow!("create TUN device: {msg}"));
+        }
+    };
     let fd = tun_dev.as_raw_fd();
 
     // 2. Add capture routes (device exists now).
@@ -326,6 +407,13 @@ pub fn event_loop(local_proxy: &str) -> Result<()> {
             Err(e) => tracing::warn!(route, error = %e, "route add failed"),
         }
     }
+
+    // 3. Keep DNS off the TUN (host-routes via the real default gateway).
+    //    Must run here — this process has CAP_NET_ADMIN, the GUI does not.
+    preserve_dns_via_gateway();
+
+    // Device + routes are up — tell enable() it may report success.
+    report(Ok(()));
 
     // Prevent tun_dev from closing the fd — TunDev owns it now.
     std::mem::forget(tun_dev);
@@ -550,16 +638,27 @@ pub fn event_loop(local_proxy: &str) -> Result<()> {
 }
 
 /// Async entry point: spawn the blocking event loop and keep it alive.
-pub async fn run(local_proxy: &str) -> Result<()> {
+///
+/// `ready` receives a single setup result from [`event_loop`].
+pub async fn run(
+    local_proxy: &str,
+    ready: std::sync::mpsc::Sender<std::result::Result<(), String>>,
+) -> Result<()> {
     let proxy = local_proxy.to_string();
     let handle = tokio::task::spawn_blocking(move || {
-        if let Err(e) = event_loop(&proxy) {
+        let ready = Some(ready);
+        if let Err(e) = event_loop(&proxy, ready) {
             tracing::error!(error = %e, "tun stack stopped");
+            return Err(e);
         }
+        Ok(())
     });
     // Keep the task alive (TunSession._task holds the JoinHandle).
-    let _ = handle.await;
-    Ok(())
+    match handle.await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e),
+        Err(e) => Err(anyhow::anyhow!("tun stack task: {e}")),
+    }
 }
 
 // Silence unused-import warnings for types used only in cfg branches.

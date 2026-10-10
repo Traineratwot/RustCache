@@ -85,6 +85,13 @@ pub enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Privileged TUN stack helper (internal — launched via pkexec/sudo)
+    #[command(hide = true)]
+    TunStack {
+        /// Local proxy `host:port` to forward captured HTTP/HTTPS into
+        #[arg(long)]
+        proxy: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -203,6 +210,23 @@ pub async fn execute(cli: Cli) -> Result<i32> {
             }
         }
         Commands::Config { action } => cmd_config(cfg, cfg_path, action),
+        Commands::TunStack { proxy } => cmd_tun_stack(proxy),
+    }
+}
+
+/// Privileged helper: run the TUN stack until killed (pkexec/sudo).
+fn cmd_tun_stack(proxy: String) -> Result<i32> {
+    #[cfg(feature = "tun")]
+    {
+        tracing::info!(%proxy, "tun-stack helper starting (privileged)");
+        // Blocks forever; the parent kills this process on disable.
+        crate::tun::stack::event_loop(&proxy, None)?;
+        Ok(exit::OK)
+    }
+    #[cfg(not(feature = "tun"))]
+    {
+        let _ = proxy;
+        bail!("TUN is not compiled in (build with --features tun)")
     }
 }
 

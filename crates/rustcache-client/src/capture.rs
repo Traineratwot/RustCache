@@ -1,17 +1,25 @@
 //! Capture orchestration: system proxy on/off + dirty recovery.
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
+use parking_lot::Mutex;
 
 use crate::config::{CaptureMode, ClientConfig};
 use crate::state::StateStore;
 
 pub struct Capture {
     store: StateStore,
+    /// Keeps the TUN stack (task or privileged helper) alive while capture is on.
+    #[cfg(feature = "tun")]
+    tun: Mutex<Option<crate::tun::privs::StackHandle>>,
 }
 
 impl Capture {
     pub fn new(store: StateStore) -> Self {
-        Self { store }
+        Self {
+            store,
+            #[cfg(feature = "tun")]
+            tun: Mutex::new(None),
+        }
     }
 
     pub fn default_store() -> Result<Self> {
@@ -48,20 +56,16 @@ impl Capture {
                             let tun_json = session.snapshot.to_json();
                             self.store
                                 .mark_dirty_parts(serde_json::json!({}), Some(tun_json))?;
+                            *self.tun.lock() = Some(session.stack);
                             Ok(format!(
                                 "tun active on {} ({})",
                                 session.snapshot.iface, session.snapshot.addr
                             ))
                         }
                         Err(e) => {
-                            // Fail-open: fall back to system proxy.
-                            tracing::warn!(error = %e, "TUN failed — falling back to system proxy");
-                            let info = crate::platform::detect();
-                            if info.sysproxy_supported {
-                                crate::sysproxy::enable(&host, port, &cfg.proxy_bypass, &self.store)
-                            } else {
-                                Err(e)
-                            }
+                            // Surface the real error — do NOT pretend TUN works.
+                            // (System-proxy fallback stays available via mode=System.)
+                            Err(e).context("TUN capture failed")
                         }
                     }
                 }
@@ -75,9 +79,12 @@ impl Capture {
     }
 
     pub fn disable(&self) -> Result<String> {
-        // Disable TUN first (if active), then system proxy.
+        // Stop TUN first (if active), then system proxy.
         #[cfg(feature = "tun")]
         {
+            if let Some(mut handle) = self.tun.lock().take() {
+                handle.abort();
+            }
             let snap = self.store.load()?;
             if let Some(ref tun_json) = snap.tun {
                 if let Some(tun_snap) = crate::tun::TunSnapshot::from_json(tun_json) {

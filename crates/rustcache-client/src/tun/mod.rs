@@ -10,6 +10,7 @@
 //! through the **old** default gateway so DNS does not black-hole.
 
 pub mod stack;
+pub mod privs;
 
 #[cfg(target_os = "linux")]
 pub mod linux;
@@ -76,23 +77,27 @@ impl TunSnapshot {
 /// Handle to an active TUN session.
 pub struct TunSession {
     pub snapshot: TunSnapshot,
-    _task: tokio::task::JoinHandle<()>,
+    /// In-process task or privileged helper process.
+    pub stack: privs::StackHandle,
 }
 
 /// Enable TUN capture. Returns the session (keeps the device alive).
+///
+/// Asks for root / `CAP_NET_ADMIN` when needed and **only** reports success
+/// after the TUN device and capture routes actually exist.
 pub async fn enable(local_proxy: &str) -> Result<TunSession> {
-    // The TUN device + routes are created inside the event loop (correct order:
-    // device first, then routes). We spawn the stack and build a snapshot for
-    // dirty-recovery from what we know.
-    let proxy = local_proxy.to_string();
-    let task = tokio::spawn(async move {
-        if let Err(e) = stack::run(&proxy).await {
-            tracing::error!(error = %e, "tun stack stopped");
-        }
-    });
+    // Spawns an in-process stack when we already have CAP_NET_ADMIN, otherwise
+    // elevates (`pkexec`/`sudo`) to a `tun-stack` helper that owns the device.
+    let mut handle = privs::spawn_stack(local_proxy)?;
 
-    // Give the event loop a moment to create the device + routes.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // Readiness = interface actually exists. Never claim success without it.
+    if !wait_for_iface("rustcache-tun0", std::time::Duration::from_secs(5)).await {
+        handle.abort();
+        return Err(anyhow::anyhow!(
+            "TUN device rustcache-tun0 was not created (need root / CAP_NET_ADMIN). \
+             Approve the password prompt or run the client with sudo."
+        ));
+    }
 
     // Build a snapshot for dirty-recovery (no route commands here — event_loop does that).
     let snap = TunSnapshot {
@@ -110,8 +115,22 @@ pub async fn enable(local_proxy: &str) -> Result<TunSession> {
 
     Ok(TunSession {
         snapshot: snap,
-        _task: task,
+        stack: handle,
     })
+}
+
+/// Poll until `iface` exists (or timeout).
+async fn wait_for_iface(name: &str, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if std::path::Path::new(&format!("/sys/class/net/{name}")).exists() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }
 
 /// Get the current default gateway (for DNS host-route recovery).

@@ -18,7 +18,7 @@ use serde_json::Value;
 
 use crate::platform::detect;
 use crate::state::StateStore;
-use handler::{SysProxyHandler, envelope, handler_id};
+use handler::{envelope, handler_id, SysProxyHandler};
 
 #[cfg(target_os = "linux")]
 fn default_handler() -> Box<dyn SysProxyHandler> {
@@ -68,10 +68,9 @@ fn default_handler() -> Box<dyn SysProxyHandler> {
 /// Resolve handler from a snapshot envelope (preferred) or current detection.
 fn handler_for_snapshot(prev: &Value) -> Box<dyn SysProxyHandler> {
     match handler_id(prev) {
+        // Old snapshots name a single DE; restore through the combined handler.
         #[cfg(target_os = "linux")]
-        Some("kde") => Box::new(linux::kde::KdeHandler),
-        #[cfg(target_os = "linux")]
-        Some("gnome") => Box::new(linux::gnome::GnomeHandler),
+        Some("kde") | Some("gnome") | Some("linux") => Box::new(linux::LinuxBothHandler),
         #[cfg(target_os = "macos")]
         Some("macos") => Box::new(macos::MacosHandler),
         #[cfg(target_os = "windows")]

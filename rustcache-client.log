@@ -1,4 +1,8 @@
-[2m2026-10-10T09:24:32.145031Z[0m [32m INFO[0m discovered RustCache [3mapi[0m[2m=[0mhttp://127.0.0.1:8080 [3mhttp[0m[2m=[0m3128 [3mhttps[0m[2m=[0m3129 [3msocks[0m[2m=[0m1080
-[2m2026-10-10T09:24:32.449177Z[0m [32m INFO[0m capture enabled [3mmsg[0m[2m=[0mtun active on rustcache-tun0 (198.18.0.1)
-[2m2026-10-10T09:24:32.449203Z[0m [32m INFO[0m rustcache-client running [3mhost[0m[2m=[0m127.0.0.1 [3mport[0m[2m=[0m31280 [3mapi[0m[2m=[0mhttp://127.0.0.1:8080 [3mmode[0m[2m=[0mTun
-[2m2026-10-10T09:24:32.449247Z[0m [32m INFO[0m client proxy listening [3mlocal[0m[2m=[0m127.0.0.1:31280
+[2m2026-10-10T10:01:34.486707Z[0m [33m WARN[0m recovered dirty system-proxy state [3mmsg[0m[2m=[0mgnome proxy restored; kde proxy restored
+[2m2026-10-10T10:01:34.487071Z[0m [32m INFO[0m discovered RustCache [3mapi[0m[2m=[0mhttp://127.0.0.1:8080 [3mhttp[0m[2m=[0m3128 [3mhttps[0m[2m=[0m3129
+[2m2026-10-10T10:01:34.487086Z[0m [32m INFO[0m rustcache-client GUI running [3mhost[0m[2m=[0m127.0.0.1 [3mport[0m[2m=[0m31280 [3mmode[0m[2m=[0mOff
+[2m2026-10-10T10:01:34.487194Z[0m [31mERROR[0m proxy server stopped [3merror[0m[2m=[0mbind 127.0.0.1:31280
+[2m2026-10-10T10:01:42.091703Z[0m [32m INFO[0m requesting root for TUN [3mtool[0m[2m=[0m"sudo -n" [3mproxy[0m[2m=[0m"127.0.0.1:31280"
+[2m2026-10-10T10:01:42.091920Z[0m [32m INFO[0m privileged TUN helper is up [3mtool[0m[2m=[0m"sudo -n"
+[2m2026-10-10T10:01:42.093884Z[0m [33m WARN[0m DNS route add failed [3mdns[0m[2m=[0m127.0.0.53 [3mstderr[0m[2m=[0mRTNETLINK answers: Operation not permitted
+

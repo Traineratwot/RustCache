@@ -1,7 +1,7 @@
 //! GNOME system proxy via `gsettings`.
 
 use anyhow::Result;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::ca::run_cmd;
 use crate::sysproxy::handler::SysProxyHandler;
@@ -83,6 +83,9 @@ impl SysProxyHandler for GnomeHandler {
         }
         let arr = format!("[{}]", hosts.join(", "));
         gsettings_set(PROXY_SCHEMA, "ignore-hosts", &arr)?;
+        // Per-scheme `enabled` must be true or some Chromium builds ignore host/port.
+        let _ = gsettings_set(HTTP_SCHEMA, "enabled", "true");
+        let _ = gsettings_set(HTTPS_SCHEMA, "enabled", "true");
         gsettings_set(PROXY_SCHEMA, "mode", "'manual'")?;
         Ok(format!("gnome manual proxy {host}:{port}"))
     }

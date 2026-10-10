@@ -15,9 +15,9 @@ build:
 	cd web && bun run build
 	cargo build --release --features embed-ui
 
-# Клиент: CLI + GUI (eframe + tray)
+# Клиент: CLI + GUI (eframe + tray) + TUN capture
 build-client:
-	cargo build -p rustcache-client --release --features gui
+	cargo build -p rustcache-client --release --features gui,tun
 
 # Всё сразу
 build-all: build build-client
@@ -79,4 +79,4 @@ $(BIN):
 	cargo build --release --features embed-ui
 
 $(CLIENT_BIN):
-	cargo build -p rustcache-client --release --features gui
+	cargo build -p rustcache-client --release --features gui,tun

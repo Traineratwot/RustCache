@@ -76,6 +76,22 @@ pub async fn run(cfg: &ClientConfig) -> DoctorReport {
         Err(e) => lines.push(format!("sysproxy: status failed — {e}")),
     }
 
+    // TUN capture device (must exist when mode=TUN is active)
+    #[cfg(feature = "tun")]
+    {
+        let tun_up = std::path::Path::new("/sys/class/net/rustcache-tun0").exists();
+        lines.push(format!(
+            "tun: iface rustcache-tun0 {}",
+            if tun_up { "UP" } else { "absent" }
+        ));
+        if !tun_up {
+            lines.push(
+                "hint: TUN needs root — the client prompts (pkexec/sudo) when you enable TUN"
+                    .into(),
+            );
+        }
+    }
+
     // Dirty recovery state
     match StateStore::default_store() {
         Ok(store) => match store.is_dirty() {

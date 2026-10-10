@@ -1,7 +1,7 @@
 //! Windows system proxy: HKCU Internet Settings.
 
 use anyhow::Result;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::ca::{ensure_success, run_cmd};
 use crate::sysproxy::handler::SysProxyHandler;
