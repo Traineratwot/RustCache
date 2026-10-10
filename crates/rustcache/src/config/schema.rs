@@ -272,18 +272,10 @@ fn default_logs_cleanup_interval_secs() -> u64 {
     300
 }
 
+/// Expand a leading `~/` to the user's home directory.
+/// Shared with `rustcache-client` via `rustcache_util::expand_tilde`.
 pub fn expand_tilde(p: &str) -> PathBuf {
-    if let Some(rest) = p.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
-    }
-    if p == "~" {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home);
-        }
-    }
-    PathBuf::from(p)
+    rustcache_util::expand_tilde(p)
 }
 
 /// Resolve `p` under `data_dir` when relative; absolute (or `~/`) paths stand alone.

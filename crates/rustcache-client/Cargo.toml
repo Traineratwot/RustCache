@@ -29,6 +29,7 @@ tracing-subscriber.workspace = true
 hex.workspace = true
 libc.workspace = true
 parking_lot.workspace = true
+rustcache-util.workspace = true
 
 # GUI (optional): tray + status window
 eframe = { version = "0.31", optional = true, default-features = true, features = ["default_fonts", "glow"] }

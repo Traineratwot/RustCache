@@ -100,12 +100,7 @@ pub async fn status(api: &RustCacheApi, ca: &CaConfig) -> Result<CaStatus> {
 }
 
 fn expand_tilde(p: &str) -> PathBuf {
-    if let Some(rest) = p.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
-    }
-    PathBuf::from(p)
+    rustcache_util::expand_tilde(p)
 }
 
 #[cfg(target_os = "linux")]

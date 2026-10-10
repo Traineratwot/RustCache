@@ -1,0 +1,9 @@
+[package]
+name = "rustcache-util"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Shared host/authority parsing and secret-file helpers for RustCache crates"
+
+[dependencies]

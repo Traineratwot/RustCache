@@ -219,6 +219,11 @@ pub struct ParsedUrl {
     pub path_query: String,
 }
 
+/// Parse an absolute URL into scheme, host, optional port and path+query.
+///
+/// IPv6 literals keep working via `rustcache_util::split_authority`:
+/// `http://[::1]:8080/a` → host `::1`, port `8080`. The host is lowercased;
+/// userinfo is stripped. An empty path becomes `/`.
 pub fn parse_url(url: &str) -> Result<ParsedUrl> {
     let (scheme, rest) = url
         .split_once("://")
@@ -228,11 +233,14 @@ pub fn parse_url(url: &str) -> Result<ParsedUrl> {
         Some(i) => rest.split_at(i),
         None => (rest, ""),
     };
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((h, p)) if !h.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => {
-            (h.to_ascii_lowercase(), p.parse::<u16>().ok())
-        }
-        _ => (authority.to_ascii_lowercase(), None),
+    let (raw_host, raw_port) = rustcache_util::split_authority(authority);
+    let host = raw_host.to_ascii_lowercase();
+    let port = match raw_port {
+        Some(p) => Some(
+            p.parse::<u16>()
+                .map_err(|_| crate::Error::Protocol(format!("bad port in url: {url}")))?,
+        ),
+        None => None,
     };
     let path_query = if path_query.is_empty() {
         "/".to_string()
@@ -460,6 +468,19 @@ mod tests {
     fn parse_url_with_port() {
         let u = parse_url("https://example.com:8443/").unwrap();
         assert_eq!(u.port, Some(8443));
+    }
+
+    #[test]
+    fn parse_url_ipv6_literal() {
+        // Regression: host parsing used to split on the last colon and turn
+        // `[::1]:8080` into host `[::1]` with a garbage port (or host `:`).
+        let u = parse_url("http://[::1]:8080/a?b=1").unwrap();
+        assert_eq!(u.host, "::1");
+        assert_eq!(u.port, Some(8080));
+        assert_eq!(u.path_query, "/a?b=1");
+        let u = parse_url("https://[2001:db8::1]/").unwrap();
+        assert_eq!(u.host, "2001:db8::1");
+        assert_eq!(u.port, None);
     }
 
     #[test]

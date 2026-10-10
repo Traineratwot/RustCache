@@ -14,6 +14,7 @@ Plans: `docs/plans/`. Delivery reports: `docs/compose/spec/`.
 - `crates/rustcache-core` — lib: `cache/` (key/disk/mem/meta/evict/coalesce), `certs/` (ca/leaf/store), `http/` (cache_policy/fetch), `stats/` (metrics + SQLite `logstore`), `excl/`
 - `crates/rustcache` — bin: CLI `main.rs`, shared `engine.rs` (`CacheEngine`), `listeners/` (http_proxy, mitm_proxy, socks5), `api/` (routes, pac, state), `config/` (schema, watch), `ui_embed.rs` (feature `embed-ui`)
 - `crates/rustcache-client` — bin: desktop client (CA install, system proxy, resilient local proxy :31280 → RustCache with DIRECT fail-open). Does **not** manage the rustcache process. Optional `--features gui` (eframe + tray-icon) for `run --tray` / `gui`.
+- `crates/rustcache-util` — shared, dependency-free helpers: `host` (authority/URL host parsing, IPv6 brackets, userinfo stripping) and `fs` (`expand_tilde`, `set_private_mode` 0600). Used by all three crates above — do not re-copy host/port parsing.
 - `web/` — SPA source. `scripts/smoke.sh` and integration `tests/` live under `crates/rustcache/tests/` (fixtures in `tests/common/`).
 
 ## Settings & data locations

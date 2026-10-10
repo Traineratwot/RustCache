@@ -13,10 +13,7 @@ use crate::config::schema::PacMode;
 
 /// Host-part of a `Host` header (no port).
 fn host_part(host_header: &str) -> String {
-    match host_header.rsplit_once(':') {
-        Some((h, p)) if !h.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => h.to_string(),
-        _ => host_header.to_string(),
-    }
+    rustcache_util::host_of(host_header).to_string()
 }
 
 fn is_loopback_name(h: &str) -> bool {

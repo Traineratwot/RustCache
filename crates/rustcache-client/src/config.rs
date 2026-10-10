@@ -192,21 +192,9 @@ impl ClientConfig {
     }
 }
 
-/// Parse `host:port` (IPv6 in brackets supported).
+/// Parse `host:port` (IPv6 in brackets supported). Port is required.
 pub fn parse_host_port(s: &str) -> Result<(String, u16)> {
-    if let Some(rest) = s.strip_prefix('[') {
-        let (host, port) = rest
-            .split_once("]:")
-            .with_context(|| format!("bad [ipv6]:port {s}"))?;
-        let port: u16 = port.parse().with_context(|| format!("bad port in {s}"))?;
-        Ok((host.to_string(), port))
-    } else {
-        let (host, port) = s
-            .rsplit_once(':')
-            .with_context(|| format!("bad host:port {s}"))?;
-        let port: u16 = port.parse().with_context(|| format!("bad port in {s}"))?;
-        Ok((host.to_string(), port))
-    }
+    Ok(rustcache_util::split_host_port(s)?)
 }
 
 #[cfg(test)]

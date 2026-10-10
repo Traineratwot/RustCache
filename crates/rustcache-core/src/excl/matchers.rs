@@ -5,6 +5,16 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::sync::{Arc, OnceLock};
 
+/// Host part of a URL, without scheme, port, userinfo or IPv6 brackets.
+///
+/// The brackets matter: `https://[::1]/` must yield `::1`, otherwise the CIDR
+/// matchers never see a parsable address and IPv6 exclusions silently never fire.
+/// Userinfo is stripped so `https://victim@bank.example/` cannot dodge an
+/// exclusion for `bank.example`.
+fn extract_host(url: &str) -> String {
+    rustcache_util::host_from_url(url)
+}
+
 /// One exclusion rule. Variants map to config syntax (`*.example.com`, `.com`, CIDR, bare host).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -152,35 +162,6 @@ impl ExclusionSet {
 
     pub fn matchers(&self) -> &[Matcher] {
         &self.matchers
-    }
-}
-
-/// Host part of a URL, without scheme, port, userinfo or IPv6 brackets.
-///
-/// The brackets matter: `https://[::1]/` must yield `::1`, otherwise the CIDR
-/// matchers never see a parsable address and IPv6 exclusions silently never fire.
-fn extract_host(url: &str) -> String {
-    let rest = match url.split_once("://") {
-        Some((_, r)) => r,
-        None => url,
-    };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
-    // Strip userinfo (`user:pass@host`) before looking for the port.
-    let authority = match authority.rsplit_once('@') {
-        Some((_, h)) => h,
-        None => authority,
-    };
-    if let Some(inner) = authority.strip_prefix('[') {
-        // IPv6 literal: everything up to the closing bracket is the host.
-        if let Some((host, _port)) = inner.split_once(']') {
-            return host.to_ascii_lowercase();
-        }
-    }
-    match authority.rsplit_once(':') {
-        Some((h, p)) if !h.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => {
-            h.to_ascii_lowercase()
-        }
-        _ => authority.to_ascii_lowercase(),
     }
 }
 

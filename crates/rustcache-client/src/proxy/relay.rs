@@ -66,7 +66,9 @@ async fn connect_outbound(addr: &str) -> std::io::Result<TcpStream> {
 async fn resolve_first(addr: &str) -> std::io::Result<std::net::SocketAddr> {
     #[cfg(feature = "tun")]
     {
-        let (host, port) = split_host_port_str(addr)?;
+        // Shared parser: `host:port` / `[v6]:port`, port required.
+        let (host, port) = rustcache_util::split_host_port(addr)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
         crate::tun::bypass::resolve_host(&host, port)
             .await?
             .into_iter()
@@ -81,35 +83,6 @@ async fn resolve_first(addr: &str) -> std::io::Result<std::net::SocketAddr> {
             std::io::Error::new(std::io::ErrorKind::NotFound, format!("resolve {addr}"))
         })
     }
-}
-
-#[cfg(feature = "tun")]
-fn split_host_port_str(addr: &str) -> std::io::Result<(String, u16)> {
-    if let Ok(sa) = addr.parse::<std::net::SocketAddr>() {
-        return Ok((sa.ip().to_string(), sa.port()));
-    }
-    if let Some(rest) = addr.strip_prefix('[') {
-        let (host, port_s) = rest.split_once("]:").ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("bad addr {addr}"))
-        })?;
-        let port: u16 = port_s.parse().map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("bad port in {addr}"),
-            )
-        })?;
-        return Ok((host.to_string(), port));
-    }
-    let (host, port_s) = addr.rsplit_once(':').ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("bad addr {addr}"))
-    })?;
-    let port: u16 = port_s.parse().map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("bad port in {addr}"),
-        )
-    })?;
-    Ok((host.to_string(), port))
 }
 
 /// Try to reach the RustCache proxy port. `Down` on failure — caller falls back.
@@ -232,17 +205,11 @@ pub async fn http_direct(mut client: TcpStream, head: &HttpHead) -> Result<()> {
 }
 
 /// Split `host:port` (IPv6 in brackets). `default_port` used when missing.
+///
+/// Thin wrapper over `rustcache_util::split_host_port_or` that keeps the
+/// `anyhow::Result` shape the relay call sites expect.
 pub fn split_host_port_with(target: &str, default_port: u16) -> Result<(String, u16)> {
-    if let Some(rest) = target.strip_prefix('[') {
-        let (h, p) = rest.split_once("]:").context("bad [v6]:port")?;
-        return Ok((h.to_string(), p.parse().context("port")?));
-    }
-    if let Some((h, p)) = target.rsplit_once(':') {
-        if !h.is_empty() && p.chars().all(|c| c.is_ascii_digit()) {
-            return Ok((h.to_string(), p.parse().context("port")?));
-        }
-    }
-    Ok((target.to_string(), default_port))
+    Ok(rustcache_util::split_host_port_or(target, default_port)?)
 }
 
 /// Split `host:port` for CONNECT — default HTTPS port 443.

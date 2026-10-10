@@ -18,6 +18,10 @@ use std::time::Duration;
 
 use anyhow::{Context, anyhow};
 
+// Re-exported so existing `net_bypass::split_host_port` call sites keep working.
+// The implementation lives in `rustcache-util` and is shared with the client.
+pub use rustcache_util::split_host_port;
+
 static LAN_IP: OnceLock<Option<Ipv4Addr>> = OnceLock::new();
 static REAL_DNS: OnceLock<Vec<IpAddr>> = OnceLock::new();
 
@@ -183,28 +187,6 @@ pub fn log_route_decision(dest: IpAddr, src: Option<IpAddr>) {
         Err(e) => format!("<ip route get: {e}>"),
     };
     tracing::info!(%dest, ?src, route = %text.trim(), "route decision");
-}
-
-/// Split `host:port` / `[v6]:port`. Bare IPv6 without brackets is rejected.
-pub fn split_host_port(addr: &str) -> anyhow::Result<(String, u16)> {
-    if let Ok(sa) = addr.parse::<SocketAddr>() {
-        return Ok((sa.ip().to_string(), sa.port()));
-    }
-    if let Some(rest) = addr.strip_prefix('[') {
-        let (host, port_s) = rest
-            .split_once("]:")
-            .ok_or_else(|| anyhow!("bad addr `{addr}`"))?;
-        let port: u16 = port_s.parse().context("port")?;
-        return Ok((host.to_string(), port));
-    }
-    let (host, port_s) = addr
-        .rsplit_once(':')
-        .ok_or_else(|| anyhow!("bad addr `{addr}`"))?;
-    if host.is_empty() {
-        return Err(anyhow!("bad addr `{addr}`"));
-    }
-    let port: u16 = port_s.parse().context("port")?;
-    Ok((host.to_string(), port))
 }
 
 /// Resolve `host:port` without ever handing back TUN fake-IPs.

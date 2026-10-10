@@ -81,27 +81,15 @@ pub fn parse_head_bytes(buf: &[u8]) -> Result<HttpHead> {
 }
 
 /// Extract host[:port] from absolute URI or CONNECT target.
+///
+/// Returns `None` for origin-form (`/path`) targets, which have no host.
 pub fn host_from_target(target: &str) -> Option<String> {
-    if let Some(rest) = target
-        .strip_prefix("http://")
-        .or_else(|| target.strip_prefix("https://"))
-    {
-        let authority = rest.split('/').next().unwrap_or(rest);
-        return Some(authority.to_string());
-    }
-    // CONNECT form host:port
-    if !target.is_empty() && !target.starts_with('/') {
-        return Some(target.to_string());
-    }
-    None
+    rustcache_util::authority_from_target(target).map(str::to_string)
 }
 
-/// Host header value without port.
+/// Host header value without port or IPv6 brackets.
 pub fn host_only(host: &str) -> &str {
-    if let Some(rest) = host.strip_prefix('[') {
-        return rest.split(']').next().unwrap_or(rest);
-    }
-    host.split(':').next().unwrap_or(host)
+    rustcache_util::host_of(host)
 }
 
 /// Whether `host` matches a bypass pattern (`localhost`, `127.0.0.1`, `*.local`).

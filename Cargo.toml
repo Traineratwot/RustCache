@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/rustcache", "crates/rustcache-core", "crates/rustcache-client"]
+members = [
+    "crates/rustcache",
+    "crates/rustcache-core",
+    "crates/rustcache-client",
+    "crates/rustcache-util",
+]
 
 [workspace.package]
 version = "0.1.4"
@@ -46,6 +51,7 @@ socket2 = "0.5"
 sha2 = "0.10"
 dirs = "6"
 serde_with = "3"
+rustcache-util = { path = "crates/rustcache-util" }
 
 [profile.release]
 lto = "thin"

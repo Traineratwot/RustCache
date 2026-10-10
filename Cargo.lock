@@ -4544,6 +4544,7 @@ dependencies = [
  "parking_lot",
  "rust-embed",
  "rustcache-core",
+ "rustcache-util",
  "rustls",
  "rustls-pemfile",
  "serde",
@@ -4573,6 +4574,7 @@ dependencies = [
  "libc",
  "nix 0.29.0",
  "parking_lot",
+ "rustcache-util",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4599,6 +4601,7 @@ dependencies = [
  "parking_lot",
  "rcgen",
  "rusqlite",
+ "rustcache-util",
  "rustls",
  "rustls-pemfile",
  "serde",
@@ -4611,6 +4614,10 @@ dependencies = [
  "webpki-roots 0.26.11",
  "x509-parser",
 ]
+
+[[package]]
+name = "rustcache-util"
+version = "0.1.4"
 
 [[package]]
 name = "rusticata-macros"

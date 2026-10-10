@@ -90,27 +90,15 @@ pub async fn read_http_request<S: AsyncReadExt + Unpin>(
 /// Split an authority (CONNECT target or `host:port`) into `(host, port)`.
 ///
 /// Handles IPv6 bracket form (`[::1]:443` → `("::1", Some("443"))`) which a
-/// naive `split(':')` would break.
+/// naive `split(':')` would break. Delegates to `rustcache_util::split_authority`
+/// so the listeners share one parsing rule with the rest of the workspace.
 pub fn split_host_port(authority: &str) -> (&str, Option<&str>) {
-    if let Some(rest) = authority.strip_prefix('[') {
-        match rest.split_once(']') {
-            Some((host, port_part)) => {
-                let port = port_part.strip_prefix(':').filter(|p| !p.is_empty());
-                (host, port)
-            }
-            None => (authority, None),
-        }
-    } else {
-        match authority.rsplit_once(':') {
-            Some((h, p)) if !h.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => (h, Some(p)),
-            _ => (authority, None),
-        }
-    }
+    rustcache_util::split_authority(authority)
 }
 
 /// Host part of an authority (ignores port). Safe for IPv6 literals.
 pub fn host_of(authority: &str) -> &str {
-    split_host_port(authority).0
+    rustcache_util::host_of(authority)
 }
 
 /// HTTP reason phrase for a status code. Unknown codes get an empty phrase

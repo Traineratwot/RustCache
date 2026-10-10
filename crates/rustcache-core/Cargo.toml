@@ -27,6 +27,7 @@ tokio.workspace = true
 tokio-rustls.workspace = true
 tracing.workspace = true
 webpki-roots.workspace = true
+rustcache-util.workspace = true
 
 [dev-dependencies]
 x509-parser.workspace = true

@@ -41,6 +41,10 @@ impl fmt::Debug for CacheKey {
 /// - Drop fragment
 /// - Normalize empty path to `/`
 /// - Sort query is left as-is (order is semantically significant for many origins)
+///
+/// Host parsing goes through `rustcache_util::split_authority` so IPv6
+/// literals (`http://[::1]:8080/`) keep their brackets out of the host and the
+/// default-port rule applies to the port, not to a slice of the address.
 pub fn canonical_url(url: &str) -> String {
     let url = url.trim();
     let (scheme, rest): (String, &str) = match url.split_once("://") {
@@ -53,21 +57,29 @@ pub fn canonical_url(url: &str) -> String {
         None => (rest, ""),
     };
 
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((h, p)) if !h.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => {
-            (h.to_ascii_lowercase(), Some(p))
-        }
-        _ => (authority.to_ascii_lowercase(), None),
+    // split_authority strips userinfo and IPv6 brackets; we rebuild authority
+    // from (host, port) below so the default-port drop is well-defined.
+    let (raw_host, raw_port) = rustcache_util::split_authority(authority);
+    let host = raw_host.to_ascii_lowercase();
+    // Re-bracket IPv6 literals: `host` is bare `::1` after stripping.
+    let host = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host
     };
 
     let default_port = match scheme.as_str() {
-        "https" => "443",
-        "http" => "80",
-        _ => "",
+        "https" => Some(443u16),
+        "http" => Some(80),
+        _ => None,
     };
-    let authority = match port {
-        Some(p) if !p.is_empty() && p != default_port => format!("{host}:{p}"),
-        _ => host,
+    let authority = match raw_port {
+        Some(p) => match p.parse::<u16>() {
+            Ok(port) if Some(port) != default_port => format!("{host}:{port}"),
+            // Default port, or unparseable port that is not a real port — drop it.
+            _ => host,
+        },
+        None => host,
     };
 
     let path_and_query = path_and_query.split('#').next().unwrap_or("");
@@ -175,6 +187,17 @@ mod tests {
             canonical_url("http://example.com:8080/x"),
             "http://example.com:8080/x"
         );
+    }
+
+    #[test]
+    fn ipv6_literal_keeps_brackets_and_drops_default_port() {
+        // Regression: a naive `rsplit_once(':')` treated `::1` as host `:` + port `1`.
+        assert_eq!(canonical_url("http://[::1]:80/x"), "http://[::1]/x");
+        assert_eq!(
+            canonical_url("http://[2001:db8::1]:8080/a"),
+            "http://[2001:db8::1]:8080/a"
+        );
+        assert_eq!(canonical_url("https://[::1]:443/"), "https://[::1]/");
     }
 
     #[test]

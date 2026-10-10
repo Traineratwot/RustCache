@@ -28,14 +28,7 @@ use super::state::ApiState;
 
 /// Host part of an authority, without port or IPv6 brackets.
 fn host_part(authority: &str) -> &str {
-    let authority = authority.trim();
-    if let Some(inner) = authority.strip_prefix('[') {
-        return inner.split(']').next().unwrap_or(inner);
-    }
-    match authority.rsplit_once(':') {
-        Some((h, p)) if !h.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => h,
-        _ => authority,
-    }
+    rustcache_util::host_of(authority.trim())
 }
 
 fn is_loopback(host: &str) -> bool {

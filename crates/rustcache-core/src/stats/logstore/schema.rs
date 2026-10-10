@@ -10,28 +10,11 @@ use rusqlite::Connection;
 /// not been checkpointed yet, so leaving it world-readable would defeat the
 /// mode on `logs.db` itself.
 pub(super) fn set_db_mode(path: &Path) {
-    #[cfg(unix)]
-    {
-        chmod_600(path);
-        for suffix in ["-wal", "-shm"] {
-            let mut name = path.as_os_str().to_os_string();
-            name.push(suffix);
-            chmod_600(Path::new(&name));
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-    }
-}
-
-#[cfg(unix)]
-fn chmod_600(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    if let Ok(meta) = std::fs::metadata(path) {
-        let mut perms = meta.permissions();
-        perms.set_mode(0o600);
-        let _ = std::fs::set_permissions(path, perms);
+    let _ = rustcache_util::set_private_mode(path);
+    for suffix in ["-wal", "-shm"] {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(suffix);
+        let _ = rustcache_util::set_private_mode(Path::new(&name));
     }
 }
 

@@ -36,12 +36,17 @@ pub struct DiscoveredTarget {
     pub api_port: u16,
 }
 
-/// Normalize free-form user input (IP, host, host:port, URL) to an API base URL.
+/// Normalise free-form user input (IP, host, host:port, `[v6]:port`, URL) to
+/// an `http(s)://host[:port]` API base. When the port is missing it is filled
+/// in from `default_api_port`.
 ///
 /// - `192.168.1.10`           → `http://192.168.1.10:8080`
 /// - `192.168.1.10:8080`      → `http://192.168.1.10:8080`
 /// - `http://10.0.0.5:8080`   → as-is
 /// - `myhost.local`           → `http://myhost.local:8080`
+///
+/// "Has a port" is decided by the shared authority parser so bare IPv6 is not
+/// mistaken for `host:port`.
 pub fn normalize_api_base(input: &str, default_api_port: u16) -> String {
     let s = input.trim().trim_end_matches('/');
     if s.is_empty() {
@@ -50,36 +55,18 @@ pub fn normalize_api_base(input: &str, default_api_port: u16) -> String {
     if s.starts_with("http://") || s.starts_with("https://") {
         return s.to_string();
     }
-    // host or host:port (IPv6 in brackets)
-    if s.starts_with('[') {
-        if s.contains("]:") {
-            return format!("http://{s}");
-        }
-        return format!("http://{s}:{default_api_port}");
-    }
-    let has_port = s
-        .rsplit_once(':')
-        .map(|(_, p)| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
-        .unwrap_or(false);
-    if has_port {
+    // host, host:port, [v6] or [v6]:port — only append the default when no port.
+    let (_, port) = rustcache_util::split_authority(s);
+    if port.is_some() {
         format!("http://{s}")
     } else {
         format!("http://{s}:{default_api_port}")
     }
 }
 
-/// Host part of an API base or bare input.
+/// Host part of an API base or bare input (no scheme, port or IPv6 brackets).
 pub fn host_of_api_base(base: &str) -> String {
-    let s = base
-        .trim()
-        .trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .trim_end_matches('/');
-    let authority = s.split('/').next().unwrap_or(s);
-    if let Some(rest) = authority.strip_prefix('[') {
-        return rest.split(']').next().unwrap_or(rest).to_string();
-    }
-    authority.split(':').next().unwrap_or(authority).to_string()
+    rustcache_util::host_from_url(base)
 }
 
 /// Live upstream (RustCache) coordinates — updated when the user enters a host.
@@ -308,17 +295,8 @@ fn parse_http_url(url: &str) -> Result<HttpUri> {
         Some((a, p)) => (a, format!("/{p}")),
         None => (rest, "/".to_string()),
     };
-    let (host, port) = if let Some(h) = authority.strip_prefix('[') {
-        let (h, rest) = h.split_once("]:").context("ipv6 authority")?;
-        (h.to_string(), rest.parse::<u16>().context("port")?)
-    } else if let Some((h, p)) = authority.rsplit_once(':') {
-        (h.to_string(), p.parse::<u16>().context("port")?)
-    } else {
-        (
-            authority.to_string(),
-            if url.starts_with("https://") { 443 } else { 80 },
-        )
-    };
+    let default_port = if url.starts_with("https://") { 443 } else { 80 };
+    let (host, port) = rustcache_util::split_host_port_or(authority, default_port)?;
     Ok(HttpUri { host, port, path })
 }
 

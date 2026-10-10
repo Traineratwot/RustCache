@@ -18,10 +18,7 @@ pub struct CaMaterial {
 impl CaMaterial {
     /// Ensure key file is 0600 and cert is readable.
     pub fn harden_key_permissions(&self) -> Result<()> {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&self.key_path)?.permissions();
-        perms.set_mode(0o600);
-        std::fs::set_permissions(&self.key_path, perms)?;
+        rustcache_util::set_private_mode(&self.key_path)?;
         Ok(())
     }
 }
