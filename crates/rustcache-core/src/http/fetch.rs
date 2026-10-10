@@ -79,19 +79,31 @@ impl OriginFetcher {
             .unwrap_or(if parsed.scheme == "https" { 443 } else { 80 });
         let addr = format!("{}:{}", parsed.host, port);
 
-        // Bind to the LAN address when known so a client-side capture TUN
-        // (policy routing) does not re-capture our origin fetch.
+        // Real DNS + LAN source bind so a client-side capture TUN cannot
+        // re-capture this origin fetch (fake-IP answers or routing loop).
+        let addrs = crate::net_bypass::resolve_host(&parsed.host, port)
+            .await
+            .with_context(|| format!("resolve {addr}"))?;
+        let sa = addrs
+            .iter()
+            .copied()
+            .find(|a| a.is_ipv4())
+            .or_else(|| addrs.first().copied())
+            .ok_or_else(|| anyhow!("resolve {addr}: no addresses"))?;
         let socket = crate::net_bypass::bind_lan(
             tokio::net::TcpSocket::new_v4().map_err(|e| anyhow!("tcp socket: {e}"))?,
         );
         socket.set_nodelay(true).ok();
-        // Resolve first — TcpSocket::connect needs a SocketAddr, not a hostname.
-        let mut addrs = tokio::net::lookup_host(&addr)
-            .await
-            .with_context(|| format!("resolve {addr}"))?;
-        let sa = addrs
-            .next()
-            .ok_or_else(|| anyhow!("resolve {addr}: no addresses"))?;
+        let local = socket
+            .local_addr()
+            .ok()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| "?".into());
+        crate::net_bypass::log_route_decision(
+            sa.ip(),
+            crate::net_bypass::lan_ip().map(std::net::IpAddr::V4),
+        );
+        tracing::info!(url, %addr, %sa, %local, "origin fetch connecting");
         let stream = tokio::time::timeout(self.connect_timeout, socket.connect(sa))
             .await
             .map_err(|_| anyhow!("connect timeout to {addr}"))?

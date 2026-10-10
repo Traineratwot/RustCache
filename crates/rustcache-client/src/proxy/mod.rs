@@ -89,7 +89,7 @@ impl ProxyServer {
         let route = RouteDecider::new(&self.health, &self.bypass, self.health.use_upstream())
             .decide_connect(&target);
 
-        tracing::debug!(%target, ?route, "CONNECT");
+        tracing::info!(%target, ?route, "CONNECT");
 
         // Per-connection fail-open: if the chosen RustCache hop is unreachable,
         // fall back to DIRECT before anything is written to the client.
@@ -122,7 +122,7 @@ impl ProxyServer {
     async fn handle_http(&self, client: TcpStream, head: &HttpHead) -> Result<()> {
         let route = RouteDecider::new(&self.health, &self.bypass, self.health.use_http_upstream())
             .decide_http(&head.target, head.host.as_deref());
-        tracing::debug!(target = %head.target, ?route, "HTTP");
+        tracing::info!(target = %head.target, ?route, "HTTP");
 
         match route {
             Route::Mitm | Route::RawTunnel => {

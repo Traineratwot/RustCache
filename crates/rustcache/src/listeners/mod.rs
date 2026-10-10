@@ -35,10 +35,9 @@ pub async fn read_request_with_timeout<S: AsyncReadExt + Unpin>(
     }
 }
 
-/// [`TcpStream::connect`] under an explicit deadline.
+/// Connect to `host:port` under a deadline, bypassing a capture TUN
+/// (real DNS + LAN source bind). Used for CONNECT tunnels and raw splices —
+/// without the bypass these are re-captured and surface as 502 loops.
 pub async fn connect_with_timeout(addr: &str, timeout: Duration) -> anyhow::Result<TcpStream> {
-    match tokio::time::timeout(timeout, TcpStream::connect(addr)).await {
-        Ok(r) => Ok(r?),
-        Err(_) => Err(anyhow::anyhow!("connect timeout to {addr}")),
-    }
+    rustcache_core::net_bypass::connect_bypass(addr, timeout).await
 }

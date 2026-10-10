@@ -179,9 +179,21 @@ fn build_args(local_proxy: &str) -> Result<Args> {
     })
 }
 
+/// Locate the `ip` binary — pkexec/sudo sanitize PATH and `ip` often lives
+/// in /sbin or /usr/sbin, which the helper may not see.
+fn find_ip_bin() -> String {
+    for p in ["/usr/sbin/ip", "/usr/bin/ip", "/sbin/ip", "/bin/ip"] {
+        if std::path::Path::new(p).exists() {
+            return p.to_string();
+        }
+    }
+    "ip".into()
+}
+
 /// Installs `ip rule from <lan_ip>/32 table 100` + default route in table 100.
 /// Returns `true` when the rule was installed (needs root — we run in the helper).
 fn install_bypass_routing() -> bool {
+    let ip_bin = find_ip_bin();
     let Some(lan) = super::bypass::lan_ip() else {
         tracing::warn!("no LAN IP detected — outbound may loop through TUN");
         return false;
@@ -196,19 +208,20 @@ fn install_bypass_routing() -> bool {
     };
 
     let run = |args: &[&str]| {
-        let out = std::process::Command::new("ip").args(args).output();
+        let out = std::process::Command::new(&ip_bin).args(args).output();
         match out {
             Ok(o) if o.status.success() => true,
             Ok(o) => {
                 tracing::warn!(
                     cmd = ?args,
+                    bin = %ip_bin,
                     stderr = %String::from_utf8_lossy(&o.stderr),
                     "bypass routing cmd failed"
                 );
                 false
             }
             Err(e) => {
-                tracing::warn!(cmd = ?args, error = %e, "bypass routing cmd failed");
+                tracing::warn!(cmd = ?args, bin = %ip_bin, error = %e, "bypass routing cmd failed");
                 false
             }
         }
@@ -249,25 +262,75 @@ fn install_bypass_routing() -> bool {
         "main",
     ]);
 
+    // Keep real DNS resolvers on the old gateway (host /32 is more specific
+    // than the TUN capture routes). Without this a resolver query can re-enter
+    // the TUN and come back as a 198.18.x.x fake-IP.
+    for dns in super::bypass::dns_bypass_targets() {
+        if dns.is_loopback() {
+            continue;
+        }
+        let dest = match dns {
+            std::net::IpAddr::V4(v4) => format!("{v4}/32"),
+            std::net::IpAddr::V6(v6) => format!("{v6}/128"),
+        };
+        if !run(&["route", "add", &dest, "via", &gw.to_string(), "dev", &iface]) {
+            tracing::warn!(%dest, "DNS host-route add failed");
+        }
+    }
+
     if ok1 && ok2 {
-        tracing::info!(%lan, %gw, %iface, table, "bypass routing installed (outbound skips TUN)");
+        tracing::info!(%lan, %gw, %iface, table, bin = %ip_bin, "bypass routing installed (outbound skips TUN)");
+        // Dump the resulting state into the helper log for diagnosis.
+        for args in [vec!["rule", "show"], vec!["route", "show", "table", table]] {
+            let _ = std::process::Command::new(&ip_bin)
+                .args(&args)
+                .output()
+                .map(|o| {
+                    tracing::info!(
+                        cmd = ?args,
+                        out = %String::from_utf8_lossy(&o.stdout).trim(),
+                        "bypass state"
+                    )
+                });
+        }
+        // What the server side will see on this machine.
+        tracing::info!(
+            lan = ?super::bypass::lan_ip(),
+            gw = ?super::bypass::default_gateway(),
+            iface = ?super::bypass::default_iface(),
+            dns = ?super::bypass::dns_bypass_targets(),
+            "bypass summary (server will bind to this LAN IP)"
+        );
         true
     } else {
-        tracing::warn!(ok1, ok2, ok3, "bypass routing incomplete");
+        tracing::warn!(ok1, ok2, ok3, bin = %ip_bin, "bypass routing incomplete");
         false
     }
 }
 
 /// Removes the policy rules installed by [`install_bypass_routing`].
 fn remove_bypass_routing() {
+    let ip_bin = find_ip_bin();
     let table = super::bypass::BYPASS_TABLE;
-    let _ = std::process::Command::new("ip")
+    let _ = std::process::Command::new(&ip_bin)
         .args(["rule", "del", "priority", "100"])
         .output();
-    let _ = std::process::Command::new("ip")
+    let _ = std::process::Command::new(&ip_bin)
         .args(["rule", "del", "priority", "90"])
         .output();
-    let _ = std::process::Command::new("ip")
+    for dns in super::bypass::dns_bypass_targets() {
+        if dns.is_loopback() {
+            continue;
+        }
+        let dest = match dns {
+            std::net::IpAddr::V4(v4) => format!("{v4}/32"),
+            std::net::IpAddr::V6(v6) => format!("{v6}/128"),
+        };
+        let _ = std::process::Command::new(&ip_bin)
+            .args(["route", "del", &dest])
+            .output();
+    }
+    let _ = std::process::Command::new(&ip_bin)
         .args(["route", "flush", "table", table])
         .output();
 }

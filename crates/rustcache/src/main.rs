@@ -221,6 +221,8 @@ async fn run(config_path: PathBuf, data_dir: Option<PathBuf>) -> anyhow::Result<
     let tasks = rustcache::startup::bring_up_listeners(&cfg, &state, &engine, &leaves).await;
 
     tracing::info!("RustCache started");
+    // One-shot: show LAN/gw/rule state so TUN-bypass issues are visible in rustcache.log.
+    rustcache_core::net_bypass::log_bypass_context("server-startup");
     axum::serve(listener, api_router)
         .with_graceful_shutdown(async {
             rustcache::startup::wait_for_shutdown_signal().await;

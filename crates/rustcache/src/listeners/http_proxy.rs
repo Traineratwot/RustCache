@@ -82,6 +82,7 @@ async fn handle_connect(
             Ok(())
         }
         Err(e) => {
+            tracing::warn!(target = %target, error = %e, "CONNECT origin failed — sending 502");
             engine.metrics().add_error();
             let msg = format!(
                 "HTTP/1.1 502 Bad Gateway\r\nContent-Length: {}\r\n\r\n{}",

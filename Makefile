@@ -7,7 +7,7 @@ LOG         ?= rustcache.log
 CLIENT_LOG  ?= rustcache-client.log
 CLIENT_MODE ?= off
 
-.PHONY: build build-client build-all start stop start-client stop-client dev test clean-pids
+.PHONY: build build-client build-all start stop start-client stop-client dev up test clean-pids
 
 # Полная сборка сервера: UI (bun) → web/dist, затем релизный бинарник с embed-ui
 build:
@@ -70,6 +70,32 @@ dev:
 	@trap 'kill 0' EXIT INT TERM; \
 	 cargo run -p rustcache -- run --config $(CONFIG) & \
 	 cd web && bun run dev
+
+# Скрипт: собрать всё, запустить сервер + GUI-клиент в консоли (foreground).
+# Ctrl+C / SIGTERM / закрытие окна клиента — безопасная остановка обоих.
+#   GUI по сигналу может не успеть restore — после остановки принудительно
+#   снимаем system proxy (`proxy off`), если CLIENT_MODE != off.
+up: build-all
+	@echo "=== rustcache + rustcache-client GUI  |  Ctrl+C = stop ==="
+	@bash -c ' \
+		server_pid=""; client_pid=""; \
+		cleanup() { \
+			trap - INT TERM; \
+			echo; echo "== stopping =="; \
+			if [ -n "$$client_pid" ]; then kill -INT "$$client_pid" 2>/dev/null || true; fi; \
+			if [ -n "$$server_pid" ]; then kill -INT "$$server_pid" 2>/dev/null || true; fi; \
+			if [ -n "$$client_pid" ]; then wait "$$client_pid" 2>/dev/null || true; fi; \
+			if [ -n "$$server_pid" ]; then wait "$$server_pid" 2>/dev/null || true; fi; \
+			if [ "$(CLIENT_MODE)" != "off" ]; then \
+				$(CLIENT_BIN) proxy off >/dev/null 2>&1 || true; \
+			fi; \
+			echo "== stopped =="; \
+		}; \
+		trap cleanup INT TERM; \
+		$(BIN) run --config $(CONFIG) & server_pid=$$!; \
+		$(CLIENT_BIN) gui --mode $(CLIENT_MODE) & client_pid=$$!; \
+		wait -n "$$server_pid" "$$client_pid" 2>/dev/null || true; \
+		cleanup'
 
 # Все тесты workspace
 test:

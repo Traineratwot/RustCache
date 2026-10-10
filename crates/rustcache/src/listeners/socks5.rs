@@ -60,8 +60,10 @@ async fn handle(mut client: TcpStream, engine: SharedEngine) -> anyhow::Result<(
         return Ok(());
     };
 
-    match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(target.addr)).await {
-        Ok(Ok(mut upstream)) => {
+    match rustcache_core::net_bypass::connect_bypass(&target.addr.to_string(), CONNECT_TIMEOUT)
+        .await
+    {
+        Ok(mut upstream) => {
             // success reply
             let mut reply = vec![VER, 0x00, 0x00, ATYP_IPV4];
             reply.extend_from_slice(&[0, 0, 0, 0]);
@@ -82,9 +84,10 @@ async fn handle(mut client: TcpStream, engine: SharedEngine) -> anyhow::Result<(
             });
             Ok(())
         }
-        failed => {
+        Err(e) => {
             // 0x04 host unreachable on timeout, 0x05 connection refused otherwise.
-            let reply_code = if failed.is_err() { 0x04 } else { 0x05 };
+            let msg = format!("{e:#}");
+            let reply_code = if msg.contains("timeout") { 0x04 } else { 0x05 };
             engine.metrics().add_error();
             client
                 .write_all(&[VER, reply_code, 0x00, ATYP_IPV4, 0, 0, 0, 0, 0, 0])
@@ -172,11 +175,11 @@ async fn negotiate(
             let mut name = vec![0u8; len[0] as usize];
             client.read_exact(&mut name).await?;
             let name = String::from_utf8_lossy(&name).to_string();
-            let ip = tokio::net::lookup_host((name.as_str(), 0))
+            // Real DNS — TUN virtual DNS would hand back 198.18.x.x fake-IPs.
+            let ip = rustcache_core::net_bypass::resolve_host(&name, 0)
                 .await
                 .ok()
-                .and_then(|mut it| it.next())
-                .map(|a| a.ip());
+                .and_then(|addrs| addrs.first().map(|a| a.ip()));
             match ip {
                 Some(ip) => (ip, name),
                 None => {

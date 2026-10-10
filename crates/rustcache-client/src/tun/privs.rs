@@ -113,7 +113,12 @@ pub fn spawn_teardown() -> Result<Vec<String>> {
 
     // (tool, args-before-exe, human label, grace)
     let methods: [(&str, Vec<String>, &str, u64); 3] = [
-        ("pkexec", vec![], "pkexec (enter root password in the dialog)", 60),
+        (
+            "pkexec",
+            vec![],
+            "pkexec (enter root password in the dialog)",
+            60,
+        ),
         ("sudo", vec!["-n".into()], "sudo -n", 10),
         ("sudo", vec![], "sudo", 60),
     ];
@@ -173,7 +178,10 @@ pub fn spawn_teardown() -> Result<Vec<String>> {
         }
     }
 
-    bail!("TUN teardown needs root — no elevation method worked ({last_err}). Run: sudo {} tun-teardown", exe.display())
+    bail!(
+        "TUN teardown needs root — no elevation method worked ({last_err}). Run: sudo {} tun-teardown",
+        exe.display()
+    )
 }
 
 /// Start the TUN stack, elevating to root when this process cannot create the device.

@@ -19,22 +19,90 @@ pub enum Hop {
 }
 
 /// Connect outbound, binding to the LAN address when known so a capture TUN
-/// (policy routing) does not re-capture the packet.
+/// (policy routing) does not re-capture the packet. DNS is real (never
+/// 198.18.x.x fake-IPs) when the TUN feature is on.
 async fn connect_outbound(addr: &str) -> std::io::Result<TcpStream> {
     let socket = tokio::net::TcpSocket::new_v4()?;
     #[cfg(feature = "tun")]
-    if let Some(ip) = crate::tun::bypass::lan_ip() {
-        let _ = socket.bind(std::net::SocketAddr::new(ip.into(), 0));
-    }
+    let bound = {
+        let ip = crate::tun::bypass::lan_ip();
+        // Loopback (127.0.0.1:31280 → RustCache) never needs a LAN bind.
+        let is_loopback = addr.starts_with("127.") || addr.starts_with("localhost");
+        if let Some(ip) = ip {
+            let r = socket.bind(std::net::SocketAddr::new(ip.into(), 0));
+            if r.is_err() {
+                tracing::warn!(%ip, "relay bind_lan failed");
+            }
+        } else if !is_loopback {
+            tracing::warn!("relay: no LAN IP — DIRECT may loop via TUN");
+        }
+        ip.map(|i| i.to_string())
+            .unwrap_or_else(|| if is_loopback { "loopback" } else { "?" }.into())
+    };
+    #[cfg(not(feature = "tun"))]
+    let bound = "default".to_string();
     let _ = socket.set_nodelay(true);
-    // Resolve first — TcpSocket::connect needs a SocketAddr, not a hostname.
-    let sa = tokio::net::lookup_host(addr)
-        .await?
-        .next()
-        .ok_or_else(|| {
+    let sa = resolve_first(addr).await?;
+    tracing::info!(%addr, %sa, bound, "relay connect_outbound");
+    match socket.connect(sa).await {
+        Ok(s) => {
+            tracing::info!(%addr, %sa, "relay connect_outbound: ok");
+            Ok(s)
+        }
+        Err(e) => {
+            tracing::warn!(%addr, %sa, %bound, error = %e, "relay connect_outbound: failed");
+            Err(e)
+        }
+    }
+}
+
+async fn resolve_first(addr: &str) -> std::io::Result<std::net::SocketAddr> {
+    #[cfg(feature = "tun")]
+    {
+        let (host, port) = split_host_port_str(addr)?;
+        crate::tun::bypass::resolve_host(&host, port)
+            .await?
+            .into_iter()
+            .find(|sa| sa.is_ipv4())
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, format!("resolve {addr}"))
+            })
+    }
+    #[cfg(not(feature = "tun"))]
+    {
+        tokio::net::lookup_host(addr).await?.next().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::NotFound, format!("resolve {addr}"))
+        })
+    }
+}
+
+#[cfg(feature = "tun")]
+fn split_host_port_str(addr: &str) -> std::io::Result<(String, u16)> {
+    if let Ok(sa) = addr.parse::<std::net::SocketAddr>() {
+        return Ok((sa.ip().to_string(), sa.port()));
+    }
+    if let Some(rest) = addr.strip_prefix('[') {
+        let (host, port_s) = rest.split_once("]:").ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("bad addr {addr}"))
         })?;
-    socket.connect(sa).await
+        let port: u16 = port_s.parse().map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("bad port in {addr}"),
+            )
+        })?;
+        return Ok((host.to_string(), port));
+    }
+    let (host, port_s) = addr.rsplit_once(':').ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("bad addr {addr}"))
+    })?;
+    let port: u16 = port_s.parse().map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("bad port in {addr}"),
+        )
+    })?;
+    Ok((host.to_string(), port))
 }
 
 /// Try to reach the RustCache proxy port. `Down` on failure — caller falls back.
@@ -81,6 +149,7 @@ pub async fn connect_via_connected(
     let status_ok = text.starts_with("HTTP/1.1 200") || text.starts_with("HTTP/1.0 200");
     if !status_ok {
         let first = text.lines().next().unwrap_or("HTTP/1.1 502 Bad Gateway");
+        tracing::warn!(%target, status = %first, "upstream CONNECT not 200 — relaying to client");
         let resp = format!("{first}\r\nConnection: close\r\n\r\n");
         client.write_all(resp.as_bytes()).await?;
         return Ok(());
