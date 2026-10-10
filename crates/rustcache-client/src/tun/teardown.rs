@@ -19,10 +19,34 @@ use anyhow::Result;
 const IFACE: &str = super::stack::TUN_IFACE;
 const BYPASS_TABLE: &str = super::bypass::BYPASS_TABLE;
 
+fn find_ip_bin() -> String {
+    find_util_bin("ip")
+}
+
+fn find_util_bin(name: &str) -> String {
+    for dir in ["/usr/sbin", "/usr/bin", "/sbin", "/bin"] {
+        let p = format!("{dir}/{name}");
+        if std::path::Path::new(&p).exists() {
+            return p;
+        }
+    }
+    name.to_string()
+}
+
 /// Run every restore step. Requires root (CAP_NET_ADMIN + mount). Safe to run
 /// repeatedly — each step tolerates "already gone".
 pub fn force_restore() -> Result<Vec<String>> {
     let mut done = Vec::new();
+    let ip = find_ip_bin();
+
+    // 0. Stop any leftover privileged helper — it re-creates the device and
+    //    re-installs routes while it lives. Unprivileged kill gets EPERM.
+    let pkill = find_util_bin("pkill");
+    match run(&pkill, &["-f", "rustcache-client tun-stack"]) {
+        Ok(true) => done.push("tun-stack helper killed".into()),
+        Ok(false) => {}
+        Err(e) => done.push(format!("pkill helper failed: {e:#}")),
+    }
 
     // 1. Unmount the resolv.conf bind-mount FIRST — this is what breaks DNS.
     match unmount_resolv_conf() {
@@ -32,7 +56,7 @@ pub fn force_restore() -> Result<Vec<String>> {
     }
 
     // 2. Delete the TUN device — its routes disappear with it.
-    match run("ip", &["link", "del", IFACE]) {
+    match run(&ip, &["link", "del", IFACE]) {
         Ok(true) => done.push(format!("link {IFACE} deleted")),
         Ok(false) => {}
         Err(e) => done.push(format!("link del failed: {e:#}")),
@@ -41,17 +65,30 @@ pub fn force_restore() -> Result<Vec<String>> {
     // 3. Belt: remove capture routes in case the device was already gone
     //    but the routes lingered (kernel keeps them if the link is renamed).
     for r in ["0.0.0.0/1", "128.0.0.0/1"] {
-        let _ = run("ip", &["route", "del", r, "dev", IFACE]);
+        let _ = run(&ip, &["route", "del", r, "dev", IFACE]);
     }
 
-    // 4. Our bypass policy routing.
+    // 4. Our bypass policy routing + DNS host-routes + DNS destination rules.
     for args in [
         vec!["rule", "del", "priority", "100"],
         vec!["rule", "del", "priority", "90"],
     ] {
-        let _ = run("ip", &args);
+        let _ = run(&ip, &args);
     }
-    let _ = run("ip", &["route", "flush", "table", BYPASS_TABLE]);
+    for dns in super::bypass::dns_bypass_targets() {
+        if dns.is_loopback() {
+            continue;
+        }
+        let dest = match dns {
+            std::net::IpAddr::V4(v4) => format!("{v4}/32"),
+            std::net::IpAddr::V6(v6) => format!("{v6}/128"),
+        };
+        for _ in 0..3 {
+            let _ = run(&ip, &["rule", "del", "priority", "50", "to", &dest]);
+        }
+        let _ = run(&ip, &["route", "del", &dest]);
+    }
+    let _ = run(&ip, &["route", "flush", "table", BYPASS_TABLE]);
     done.push("bypass routing removed".into());
 
     // 5. Flush DNS caches so the new resolv.conf takes effect immediately.

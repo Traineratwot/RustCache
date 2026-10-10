@@ -195,7 +195,13 @@ fn real_dns_servers() -> Vec<std::net::IpAddr> {
     use std::net::IpAddr;
     let mut out = Vec::new();
     let mut push = |ip: IpAddr| {
-        if !is_capture_fake_ip(ip) && !out.contains(&ip) {
+        // Skip TUN virtual-DNS / gateway addresses — they only hand back fake-IPs.
+        let n = match ip {
+            IpAddr::V4(v4) => u32::from(v4),
+            _ => 0,
+        };
+        let tun_local = (n & 0xFFFF_FFFC) == 0x0A00_0000 || (n & 0xFFFE_0000) == 0xC612_0000;
+        if !is_capture_fake_ip(ip) && !tun_local && !out.contains(&ip) {
             out.push(ip);
         }
     };

@@ -334,7 +334,9 @@ fn real_dns_servers() -> Vec<IpAddr> {
 fn discover_real_dns() -> Vec<IpAddr> {
     let mut out: Vec<IpAddr> = Vec::new();
     let mut push = |ip: IpAddr| {
-        if !is_capture_fake_ip(ip) && !out.contains(&ip) {
+        // Skip TUN-local addresses (virtual-DNS pool / tun gateway). Those are
+        // exactly what answers with fake-IPs; they are not real resolvers.
+        if !is_capture_fake_ip(ip) && !is_tun_local_addr(ip) && !out.contains(&ip) {
             out.push(ip);
         }
     };
@@ -356,6 +358,7 @@ fn discover_real_dns() -> Vec<IpAddr> {
     push(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 53)));
 
     // Live /etc/resolv.conf still helps when TUN is off or nameservers are real.
+    // When TUN is up this file points at the TUN gateway — filtered above.
     if let Ok(text) = std::fs::read_to_string("/etc/resolv.conf") {
         for ns in parse_nameservers(&text) {
             push(ns);
@@ -371,6 +374,20 @@ fn discover_real_dns() -> Vec<IpAddr> {
     push(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)));
     push(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)));
     out
+}
+
+/// True for addresses that belong to the capture TUN itself (gateway / pool).
+fn is_tun_local_addr(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let n = u32::from(v4);
+            // tun2proxy TUN gateway / interface (10.0.0.0/30) and link-local of
+            // the fake-IP pool are not reachable as real DNS.
+            (n & 0xFFFF_FFFC) == 0x0A00_0000 // 10.0.0.0/30
+                || (n & 0xFFFE_0000) == 0xC612_0000 // 198.18.0.0/15
+        }
+        _ => false,
+    }
 }
 
 fn parse_nameservers(text: &str) -> Vec<IpAddr> {
@@ -415,8 +432,9 @@ async fn resolve_via_real_dns(host: &str, port: u16) -> anyhow::Result<Vec<Socke
     Err(last_err)
 }
 
-/// Minimal DNS client (A + AAAA) over UDP. Sends from a LAN-bound socket so
-/// the query itself is not re-captured by a TUN that has policy routing.
+/// Minimal DNS client (A + AAAA). UDP first; when the answer is a TUN fake-IP
+/// the query re-entered the capture path, so we retry over **DNS/TCP** —
+/// tun2proxy virtual DNS only hijacks UDP/53, TCP reaches the real resolver.
 async fn query_dns_a(server: IpAddr, name: &str) -> anyhow::Result<Vec<IpAddr>> {
     // Loopback resolvers (127.0.0.53) must not use a LAN-bound socket — the
     // kernel rejects that bind/connect pair (EINVAL).
@@ -430,12 +448,16 @@ async fn query_dns_a(server: IpAddr, name: &str) -> anyhow::Result<Vec<IpAddr>> 
     let sock = tokio::net::UdpSocket::bind(SocketAddr::new(bind_ip, 0))
         .await
         .context("dns udp bind")?;
+    if let Ok(local) = sock.local_addr() {
+        tracing::debug!(%name, %server, %local, "query_dns_a: udp socket");
+    }
     sock.connect(SocketAddr::new(server, 53))
         .await
         .with_context(|| format!("dns udp connect {server}"))?;
 
     let id = dns_txid();
     let mut ips = Vec::new();
+    let mut saw_fake = 0usize;
     for qtype in [1u16, 28u16] {
         // A, AAAA
         let q = encode_dns_query(id, name, qtype)?;
@@ -443,11 +465,21 @@ async fn query_dns_a(server: IpAddr, name: &str) -> anyhow::Result<Vec<IpAddr>> 
             .await
             .with_context(|| format!("dns send {server}"))?;
         let mut buf = [0u8; 1500];
-        let n = tokio::time::timeout(Duration::from_millis(1500), sock.recv(&mut buf))
-            .await
-            .map_err(|_| anyhow!("dns timeout from {server}"))?
-            .with_context(|| format!("dns recv {server}"))?;
-        ips.extend(parse_dns_answers(&buf[..n], id, qtype));
+        match tokio::time::timeout(Duration::from_millis(1500), sock.recv(&mut buf)).await {
+            Ok(Ok(n)) => {
+                let answers = parse_dns_answers(&buf[..n], id, qtype);
+                saw_fake += answers.iter().filter(|ip| is_capture_fake_ip(**ip)).count();
+                ips.extend(answers);
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(%name, %server, error = %e, "query_dns_a: udp recv error");
+                break;
+            }
+            Err(_) => {
+                tracing::warn!(%name, %server, "query_dns_a: udp timeout — trying DNS/TCP");
+                break;
+            }
+        }
         if qtype == 1 && !ips.is_empty() {
             // Prefer A; still try AAAA only when A is empty (v4-only callers).
             break;
@@ -462,9 +494,79 @@ async fn query_dns_a(server: IpAddr, name: &str) -> anyhow::Result<Vec<IpAddr>> 
             %name,
             %server,
             dropped = before - ips.len(),
-            "query_dns_a: dropped TUN fake-IP answers (query likely re-entered TUN)"
+            "query_dns_a: UDP got TUN fake-IPs — retrying DNS/TCP"
         );
+        return query_dns_tcp(server, name).await;
     }
+    if ips.is_empty() && saw_fake == 0 {
+        // Empty UDP answer (or timeout path already returned Err). Try TCP too.
+        return query_dns_tcp(server, name).await;
+    }
+    Ok(ips)
+}
+
+/// DNS over TCP (RFC 7766): 2-byte length prefix + DNS message. tun2proxy's
+/// virtual DNS only hijacks UDP/53, so this reaches the real resolver even
+/// when UDP is being re-captured.
+async fn query_dns_tcp(server: IpAddr, name: &str) -> anyhow::Result<Vec<IpAddr>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let bind_ip = if server.is_loopback() {
+        IpAddr::V4(Ipv4Addr::LOCALHOST)
+    } else {
+        lan_ip()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+    };
+    let socket = if server.is_ipv4() {
+        bind_lan_to(
+            tokio::net::TcpSocket::new_v4().map_err(|e| anyhow!("tcp socket: {e}"))?,
+            Some(server),
+        )
+    } else {
+        tokio::net::TcpSocket::new_v6().map_err(|e| anyhow!("tcp socket: {e}"))?
+    };
+    let _ = socket.set_nodelay(true);
+    let _ = bind_ip; // already applied via bind_lan_to for non-loopback
+    let mut stream = tokio::time::timeout(
+        Duration::from_millis(2000),
+        socket.connect(SocketAddr::new(server, 53)),
+    )
+    .await
+    .map_err(|_| anyhow!("dns tcp connect timeout {server}"))?
+    .with_context(|| format!("dns tcp connect {server}"))?;
+
+    let id = dns_txid();
+    let mut ips = Vec::new();
+    for qtype in [1u16, 28u16] {
+        let q = encode_dns_query(id, name, qtype)?;
+        let mut msg = Vec::with_capacity(q.len() + 2);
+        msg.extend_from_slice(&(q.len() as u16).to_be_bytes());
+        msg.extend_from_slice(&q);
+        stream.write_all(&msg).await.context("dns tcp send")?;
+        stream.flush().await.ok();
+
+        let mut lenb = [0u8; 2];
+        tokio::time::timeout(Duration::from_millis(2000), stream.read_exact(&mut lenb))
+            .await
+            .map_err(|_| anyhow!("dns tcp timeout {server}"))?
+            .context("dns tcp len")?;
+        let len = u16::from_be_bytes(lenb) as usize;
+        if len == 0 || len > 4096 {
+            return Err(anyhow!("dns tcp bad length {len} from {server}"));
+        }
+        let mut body = vec![0u8; len];
+        tokio::time::timeout(Duration::from_millis(2000), stream.read_exact(&mut body))
+            .await
+            .map_err(|_| anyhow!("dns tcp timeout {server}"))?
+            .context("dns tcp body")?;
+        ips.extend(parse_dns_answers(&body, id, qtype));
+        if qtype == 1 && !ips.is_empty() {
+            break;
+        }
+    }
+    ips.retain(|ip| !is_capture_fake_ip(*ip));
+    tracing::info!(%name, %server, ?ips, "query_dns_tcp: answers");
     Ok(ips)
 }
 

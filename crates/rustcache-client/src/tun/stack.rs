@@ -268,6 +268,10 @@ fn install_bypass_routing() -> bool {
     // Keep real DNS resolvers on the old gateway (host /32 is more specific
     // than the TUN capture routes). Without this a resolver query can re-enter
     // the TUN and come back as a 198.18.x.x fake-IP.
+    //
+    // Also pin each resolver with a *destination* rule to the main table so
+    // this works regardless of source address (source-based rule 100 alone
+    // still let some DNS into the TUN).
     for dns in super::bypass::dns_bypass_targets() {
         if dns.is_loopback() {
             continue;
@@ -279,6 +283,22 @@ fn install_bypass_routing() -> bool {
         if !run(&["route", "add", &dest, "via", &gw.to_string(), "dev", &iface]) {
             tracing::warn!(%dest, "DNS host-route add failed");
         }
+        // Same /32 in table 100 so source-based hits also skip the TUN.
+        let _ = run(&[
+            "route",
+            "add",
+            &dest,
+            "via",
+            &gw.to_string(),
+            "dev",
+            &iface,
+            "table",
+            table,
+        ]);
+        // Destination rule: packets to this resolver use main (where the /32 lives).
+        let _ = run(&[
+            "rule", "add", "priority", "50", "to", &dest, "table", "main",
+        ]);
     }
 
     if ok1 && ok2 {
@@ -329,6 +349,12 @@ fn remove_bypass_routing() {
             std::net::IpAddr::V4(v4) => format!("{v4}/32"),
             std::net::IpAddr::V6(v6) => format!("{v6}/128"),
         };
+        // Destination rules were installed one per DNS server.
+        for _ in 0..3 {
+            let _ = std::process::Command::new(&ip_bin)
+                .args(["rule", "del", "priority", "50", "to", &dest])
+                .output();
+        }
         let _ = std::process::Command::new(&ip_bin)
             .args(["route", "del", &dest])
             .output();

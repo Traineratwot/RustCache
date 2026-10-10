@@ -67,6 +67,9 @@ impl StackHandle {
     /// Stop the stack. `SIGTERM` first so `tproxy-config` can restore routes
     /// (`TproxyState::Drop` / explicit `tproxy_remove`); `SIGKILL` only if the
     /// helper ignores the polite signal.
+    ///
+    /// The helper runs as root (pkexec/sudo) — a plain `kill` from this
+    /// unprivileged process gets EPERM and the device keeps capturing.
     pub fn abort(&mut self) {
         match self {
             StackHandle::Task(h) => {
@@ -77,9 +80,7 @@ impl StackHandle {
                 {
                     let pid = c.id();
                     if pid != 0 {
-                        let _ = Command::new("kill")
-                            .args(["-TERM", &pid.to_string()])
-                            .status();
+                        signal_privileged(pid, "TERM");
                         // Give tproxy_remove time to tear down routes.
                         for _ in 0..30 {
                             if c.try_wait().map(|s| s.is_some()).unwrap_or(true) {
@@ -87,6 +88,7 @@ impl StackHandle {
                             }
                             std::thread::sleep(std::time::Duration::from_millis(100));
                         }
+                        signal_privileged(pid, "KILL");
                     }
                 }
                 let _ = c.kill();
@@ -94,6 +96,45 @@ impl StackHandle {
             }
         }
     }
+}
+
+/// Send a signal to a (possibly root-owned) helper. Prefers `sudo -n` so
+/// disable does not pop a second password dialog after TUN was already approved.
+fn signal_privileged(pid: u32, sig: &str) {
+    let pid = pid.to_string();
+    let kill_bin = find_kill_bin();
+    // (tool, args before the kill binary)
+    let methods: [(&str, &[&str]); 3] = [("sudo", &["-n"]), ("pkexec", &[]), ("sudo", &[])];
+    for (tool, pre) in methods {
+        let status = Command::new(tool)
+            .args(pre)
+            .arg(&kill_bin)
+            .args(["-s", sig, &pid])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        match status {
+            Ok(s) if s.success() => {
+                tracing::info!(tool, pid, sig, "signaled TUN helper");
+                return;
+            }
+            Ok(s) => tracing::debug!(tool, pid, sig, %s, "signal helper failed, trying next"),
+            Err(e) => {
+                tracing::debug!(tool, pid, sig, error = %e, "signal helper failed, trying next")
+            }
+        }
+    }
+    tracing::warn!(pid, sig, "could not signal TUN helper (no elevation)");
+}
+
+fn find_kill_bin() -> String {
+    for p in ["/usr/bin/kill", "/bin/kill", "/usr/sbin/kill"] {
+        if Path::new(p).exists() {
+            return p.to_string();
+        }
+    }
+    "kill".into()
 }
 
 impl Drop for StackHandle {
@@ -112,14 +153,17 @@ pub fn spawn_teardown() -> Result<Vec<String>> {
     let mut last_err = String::new();
 
     // (tool, args-before-exe, human label, grace)
+    // Prefer `sudo -n` first: the user already approved TUN with a password
+    // dialog, and a second dialog on disable is how dirty state gets left
+    // behind when the user cancels it.
     let methods: [(&str, Vec<String>, &str, u64); 3] = [
+        ("sudo", vec!["-n".into()], "sudo -n", 10),
         (
             "pkexec",
             vec![],
             "pkexec (enter root password in the dialog)",
             60,
         ),
-        ("sudo", vec!["-n".into()], "sudo -n", 10),
         ("sudo", vec![], "sudo", 60),
     ];
 
