@@ -19,7 +19,7 @@ use serde_json::Value;
 #[cfg(target_os = "linux")]
 use crate::platform::detect;
 use crate::state::StateStore;
-use handler::{envelope, handler_id, SysProxyHandler};
+use handler::{SysProxyHandler, envelope, handler_id};
 
 #[cfg(target_os = "linux")]
 fn default_handler() -> Box<dyn SysProxyHandler> {

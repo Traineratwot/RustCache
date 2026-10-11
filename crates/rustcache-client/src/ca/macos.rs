@@ -92,12 +92,11 @@ pub fn status() -> Result<(bool, String)> {
     }
     if bits.is_empty() {
         // also try CA_NICKNAME
-        for kc in [keychain(CaScope::User)] {
-            let out = run_cmd("security", &["find-certificate", "-c", CA_NICKNAME, &kc])?;
-            if out.status.success() {
-                installed = true;
-                bits.push(format!("found in {kc}"));
-            }
+        let kc = keychain(CaScope::User);
+        let out = run_cmd("security", &["find-certificate", "-c", CA_NICKNAME, &kc])?;
+        if out.status.success() {
+            installed = true;
+            bits.push(format!("found in {kc}"));
         }
     }
     if bits.is_empty() {
