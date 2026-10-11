@@ -8,6 +8,8 @@ pub mod capture;
 pub mod cli;
 pub mod config;
 pub mod connectivity;
+#[cfg(feature = "gui")]
+pub mod desktop;
 pub mod doctor;
 #[cfg(feature = "gui")]
 pub mod gui;

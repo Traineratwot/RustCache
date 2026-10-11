@@ -78,11 +78,17 @@ pub struct GuiLaunch {
 impl GuiLaunch {
     /// Block on the native event loop (must be called from the main thread).
     pub fn run(self) -> Result<()> {
+        // Wayland docks match the icon via app_id → .desktop, not `with_icon`.
         let mut viewport = egui::ViewportBuilder::default()
             .with_inner_size([460.0, 580.0])
-            .with_title("RustCache Client");
+            .with_title("RustCache Client")
+            .with_app_id(crate::desktop::APP_ID);
         if let Some(icon) = window_icon() {
             viewport = viewport.with_icon(icon);
+        }
+        // Best-effort so the brand mark appears in Plasma/GNOME docks.
+        if let Err(err) = crate::desktop::install_user_desktop_entry() {
+            tracing::debug!(error = %err, "desktop entry install skipped");
         }
         let options = eframe::NativeOptions {
             viewport,

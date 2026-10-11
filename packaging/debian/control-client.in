@@ -1,0 +1,14 @@
+Package: rustcache-client
+Version: @VERSION@
+Section: net
+Priority: optional
+Architecture: @ARCH@
+Maintainer: Traineratwot <Traineratwot@users.noreply.github.com>
+Homepage: https://github.com/Traineratwot/RustCache
+Depends: libc6, libgcc-s1
+Description: Desktop client for the RustCache caching proxy
+ Cross-platform desktop client for RustCache: root CA install, system proxy
+ on/off, resilient local proxy (direct fail-open) and a status GUI.
+ .
+ Run `rustcache-client gui` for the status window, or
+ `rustcache-client run --mode system` for proxy + system capture.

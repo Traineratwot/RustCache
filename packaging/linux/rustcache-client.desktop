@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=RustCache Client
+GenericName=Caching proxy client
+Comment=CA install, system proxy, resilient local proxy to RustCache
+Exec=rustcache-client gui
+Icon=rustcache-client
+Terminal=false
+Categories=Network;Settings;
+Keywords=proxy;cache;network;
+StartupNotify=true
+StartupWMClass=rustcache-client

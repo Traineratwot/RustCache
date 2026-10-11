@@ -203,18 +203,27 @@ jobs:
             target: x86_64-unknown-linux-gnu
             asset: linux-x86_64
             archive: tar.gz
+            deb_arch: amd64
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: linux-aarch64
+            archive: tar.gz
+            deb_arch: arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             asset: windows-x86_64
             archive: zip
+            deb_arch: ""
           - os: macos-13
             target: x86_64-apple-darwin
             asset: macos-x86_64
             archive: tar.gz
+            deb_arch: ""
           - os: macos-14
             target: aarch64-apple-darwin
             asset: macos-aarch64
             archive: tar.gz
+            deb_arch: ""
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -242,6 +251,10 @@ jobs:
       - name: Build rustcache-client (gui)
         run: cargo build -p rustcache-client --release --features gui
 
+      - name: Build .deb (linux)
+        if: runner.os == 'Linux'
+        run: ./packaging/scripts/build-deb-client.sh "${{ needs.version.outputs.version }}" "${{ matrix.deb_arch }}"
+
       - name: Package (unix)
         if: matrix.archive == 'tar.gz'
         env:
@@ -252,6 +265,13 @@ jobs:
           STAGE="dist/rustcache-client-${VERSION}-${ASSET}"
           mkdir -p "$STAGE"
           cp target/release/rustcache-client "$STAGE/"
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            cp packaging/linux/rustcache-client.desktop "$STAGE/"
+            mkdir -p "$STAGE/icons"
+            cp docs/media/logo-128.png "$STAGE/icons/rustcache-client-128.png"
+            cp docs/media/logo-256.png "$STAGE/icons/rustcache-client-256.png"
+            cp docs/media/logo-512.png "$STAGE/icons/rustcache-client-512.png"
+          fi
           cat > "$STAGE/README.md" <<'EOF'
           # rustcache-client
 
@@ -389,10 +409,13 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: |
-          # include every shipped asset (deb, tar.gz, zip)
+          # server + client: deb, tar.gz, zip
           find . -maxdepth 1 -type f \( -name '*.deb' -o -name '*.tar.gz' -o -name '*.zip' \) \
             -printf '%f\n' | sort | xargs -r sha256sum > SHA256SUMS
           cat SHA256SUMS
+          # sanity: both products must be present
+          ls rustcache_*.deb >/dev/null
+          ls rustcache-client_* >/dev/null
 
       - name: Create GitHub Release
         env:
@@ -411,7 +434,7 @@ jobs:
             dist/*.deb dist/*.tar.gz dist/*.zip dist/SHA256SUMS
 
   apt-repo:
-    needs: [version, build]
+    needs: [version, build, client]
     if: needs.version.outputs.should_release == 'true' && needs.version.outputs.build_only != 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -429,16 +452,27 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Download client artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: client-*
+          path: dist
+          merge-multiple: true
+
       - name: Materialize site
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # keep accumulated pool/ from previous gh-pages
+          # keep accumulated pool/ and downloads/ from previous gh-pages
           git clone --depth 1 --branch gh-pages \
             "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" site \
             || (mkdir -p site && git -C site init && git -C site checkout --orphan gh-pages)
-          mkdir -p site/pool
-          cp dist/*.deb site/pool/
+          mkdir -p site/pool site/downloads
+          # apt pool: server + client .deb
+          cp dist/*.deb site/pool/ 2>/dev/null || true
+          # direct downloads: client archives (and server tarballs for convenience)
+          cp dist/rustcache-client_*.tar.gz dist/rustcache-client_*.zip site/downloads/ 2>/dev/null || true
+          cp dist/rustcache_*.tar.gz site/downloads/ 2>/dev/null || true
           # static site source lives in pages/ (index.html + style.css)
           cp pages/index.html pages/style.css site/
 
@@ -455,10 +489,10 @@ jobs:
             'Architectures: amd64 arm64' \
             'Description: RustCache apt repository' \
             > Release
-          # fill <!-- PACKAGES --> on the landing page
+          # fill <!-- SERVER_PACKAGES --> and <!-- CLIENT_PACKAGES --> on the landing page
           {
             echo '<ul class="packages">'
-            for f in pool/*.deb; do
+            for f in pool/rustcache_*.deb; do
               [ -e "$f" ] || continue
               base=$(basename "$f")
               # rustcache_0.1.0_amd64.deb → 0.1.0 / amd64
@@ -469,12 +503,48 @@ jobs:
                 "$f" "$base" "$arch" "$size"
             done
             echo '</ul>'
-          } > /tmp/packages.html
+          } > /tmp/server-packages.html
+          {
+            echo '<ul class="packages">'
+            for f in pool/rustcache-client_*.deb; do
+              [ -e "$f" ] || continue
+              base=$(basename "$f")
+              ver=$(echo "$base" | sed -n 's/^rustcache-client_\(.*\)_.*\.deb$/\1/p')
+              arch=$(echo "$base" | sed -n 's/^.*_\(amd64\|arm64\)\.deb$/\1/p')
+              size=$(du -h "$f" | cut -f1)
+              printf '<li><a class="name" href="%s">%s</a><span class="meta">%s · %s</span></li>\n' \
+                "$f" "$base" "deb $arch" "$size"
+            done
+            for f in downloads/rustcache-client_*; do
+              [ -e "$f" ] || continue
+              base=$(basename "$f")
+              size=$(du -h "$f" | cut -f1)
+              case "$base" in
+                *windows*) plat="windows x64" ;;
+                *macos-aarch64*) plat="macOS arm64" ;;
+                *macos-x86_64*) plat="macOS x64" ;;
+                *linux-x86_64*) plat="linux x64" ;;
+                *linux-aarch64*) plat="linux arm64" ;;
+                *) plat="archive" ;;
+              esac
+              printf '<li><a class="name" href="%s">%s</a><span class="meta">%s · %s</span></li>\n' \
+                "$f" "$base" "$plat" "$size"
+            done
+            echo '</ul>'
+          } > /tmp/client-packages.html
           python3 - <<'PY'
           from pathlib import Path
           html = Path("index.html").read_text()
-          block = Path("/tmp/packages.html").read_text()
-          Path("index.html").write_text(html.replace("<!-- PACKAGES -->", block))
+          server = Path("/tmp/server-packages.html").read_text()
+          client = Path("/tmp/client-packages.html").read_text()
+          # keep backward compat if a template still uses the old placeholder
+          if "<!-- SERVER_PACKAGES -->" in html:
+              html = html.replace("<!-- SERVER_PACKAGES -->", server)
+          if "<!-- CLIENT_PACKAGES -->" in html:
+              html = html.replace("<!-- CLIENT_PACKAGES -->", client)
+          if "<!-- PACKAGES -->" in html:
+              html = html.replace("<!-- PACKAGES -->", server)
+          Path("index.html").write_text(html)
           PY
 
       - name: Push gh-pages

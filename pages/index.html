@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>RustCache — APT repository</title>
+  <title>RustCache — Server &amp; Client</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,36 +13,58 @@
       <p class="tagline">Caching HTTP/HTTPS proxy with MITM, disk cache, SOCKS5 and web UI.</p>
     </header>
 
-    <section>
+    <section class="intro">
       <h2>Install (Debian / Ubuntu)</h2>
       <pre><code>echo "deb [trusted=yes] https://traineratwot.github.io/RustCache/ ./" \
   | sudo tee /etc/apt/sources.list.d/rustcache.list
 sudo apt update
-sudo apt install rustcache</code></pre>
-      <p>After install:</p>
-      <pre><code>sudo systemctl status rustcache
-# config:  /etc/rustcache/config.toml
-# data:    /var/lib/rustcache
-# logs:    journalctl -u rustcache
-# web UI:  http://127.0.0.1:8080</code></pre>
+sudo apt install rustcache rustcache-client</code></pre>
     </section>
 
-    <section>
-      <h2>Docker</h2>
-      <pre><code>docker run -d --name rustcache \
+    <div class="columns">
+      <section class="col">
+        <h2 class="col-title server">Server</h2>
+        <p class="muted">Caching proxy daemon — HTTP/HTTPS MITM, disk cache, SOCKS5, web UI.</p>
+
+        <h3>Docker</h3>
+        <pre><code>docker run -d --name rustcache \
   -p 3128:3128 -p 3129:3129 -p 1080:1080 \
   -p 8080:8080 -p 8081:8081 \
   -v rustcache-data:/var/lib/rustcache \
   ghcr.io/traineratwot/rustcache:latest</code></pre>
-      <p>Web UI: <code>http://127.0.0.1:8080</code> · Image:
-        <a href="https://github.com/Traineratwot/RustCache/pkgs/container/rustcache">ghcr.io/traineratwot/rustcache</a></p>
-    </section>
+        <p class="muted">Web UI: <code>http://127.0.0.1:8080</code> · Image:
+          <a href="https://github.com/Traineratwot/RustCache/pkgs/container/rustcache">ghcr.io/traineratwot/rustcache</a></p>
+
+        <h3>After install</h3>
+        <pre><code>sudo systemctl status rustcache
+# config:  /etc/rustcache/config.toml
+# data:    /var/lib/rustcache
+# logs:    journalctl -u rustcache</code></pre>
+
+        <h3>Packages (apt)</h3>
+        <!-- SERVER_PACKAGES -->
+      </section>
+
+      <section class="col">
+        <h2 class="col-title client">Client</h2>
+        <p class="muted">Desktop client — CA install, system proxy, resilient local proxy, status GUI.</p>
+
+        <h3>Quick start</h3>
+        <pre><code>rustcache-client gui                 # status window
+rustcache-client run --mode system   # proxy + system capture
+rustcache-client ca install          # install root CA
+rustcache-client proxy on|off        # system proxy
+rustcache-client doctor              # diagnostics</code></pre>
+        <p class="muted">Enter the RustCache host/IP in the GUI and press Connect —
+          proxy ports are discovered via <code>GET /api/health</code>.</p>
+
+        <h3>Downloads</h3>
+        <!-- CLIENT_PACKAGES -->
+      </section>
+    </div>
 
     <section>
-      <h2>Packages</h2>
-      <p>This directory is a flat APT repository (<code>pool/</code> + <code>Packages.gz</code>).</p>
-      <!-- PACKAGES -->
-      <p class="muted">Direct downloads are also on
+      <p class="muted">Direct downloads and checksums are also on
         <a href="https://github.com/Traineratwot/RustCache/releases">GitHub Releases</a>.</p>
     </section>
 
