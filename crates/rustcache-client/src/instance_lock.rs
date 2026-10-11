@@ -2,14 +2,15 @@
 //!
 //! `flock(LOCK_EX | LOCK_NB)` on a lock file. The kernel releases the lock
 //! when the process dies (including SIGKILL), so a crash cannot leave a
-//! permanent "already running" state.
+//! permanent "already running" state. Drop also unlocks explicitly so a
+//! re-acquire in the same process never races the close path.
 
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 
-/// Held for the process lifetime; dropping closes the fd and releases the lock.
+/// Held for the process lifetime; dropping unlocks and closes the fd.
 pub struct InstanceLock {
-    _file: File,
+    file: File,
 }
 
 impl InstanceLock {
@@ -19,16 +20,21 @@ impl InstanceLock {
             std::fs::create_dir_all(parent)
                 .map_err(|e| anyhow::anyhow!("mkdir {}: {e}", parent.display()))?;
         }
-        let file = open_locked(path)?;
-        write_pid(&file);
-        Ok(Self { _file: file })
+        let mut file = open_locked(path)?;
+        write_pid(&mut file);
+        Ok(Self { file })
     }
 }
 
-fn write_pid(file: &File) {
+impl Drop for InstanceLock {
+    fn drop(&mut self) {
+        unlock(&self.file);
+    }
+}
+
+fn write_pid(file: &mut File) {
     use std::io::Write as _;
-    let mut f = file;
-    let _ = f.write_all(format!("{}\n", std::process::id()).as_bytes());
+    let _ = file.write_all(format!("{}\n", std::process::id()).as_bytes());
 }
 
 #[cfg(unix)]
@@ -37,6 +43,7 @@ fn open_locked(path: &Path) -> anyhow::Result<File> {
 
     let file = OpenOptions::new()
         .create(true)
+        .read(true)
         .write(true)
         .truncate(false)
         .open(path)
@@ -80,24 +87,45 @@ fn open_locked(path: &Path) -> anyhow::Result<File> {
     )
 }
 
+/// Explicit unlock so the next `acquire` in this process cannot lose a race
+/// with fd close. Safe no-op where the OS lock is only released by close.
+#[cfg(unix)]
+fn unlock(file: &File) {
+    use std::os::unix::io::AsRawFd;
+    // SAFETY: fd belongs to `file`; errors are irrelevant (close still releases).
+    unsafe {
+        libc::flock(file.as_raw_fd(), libc::LOCK_UN);
+    }
+}
+
+#[cfg(not(unix))]
+fn unlock(_file: &File) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// Unique per test invocation — parallel tests / re-runs must not share a path.
+    /// Serialize lock tests: they share /tmp and the kernel flock state.
+    static TEST_GATE: Mutex<()> = Mutex::new(());
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// Unique per call — never reuse a path even across tests on one thread.
     fn tmp_lock(name: &str) -> std::path::PathBuf {
-        let unique = format!(
-            "{name}-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        );
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         std::env::temp_dir()
             .join("rustcache-client-lock-test")
-            .join(unique)
+            .join(format!("{name}-{}-{nanos}-{n}", std::process::id()))
     }
 
     #[test]
     fn second_acquire_fails_while_first_holds() {
+        let _g = TEST_GATE.lock().unwrap();
         let path = tmp_lock("exclusive");
         let first = InstanceLock::acquire(&path).expect("first acquire");
         assert!(
@@ -105,14 +133,18 @@ mod tests {
             "second instance must be rejected"
         );
         drop(first);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn acquire_succeeds_after_release() {
+        let _g = TEST_GATE.lock().unwrap();
         let path = tmp_lock("release");
-        let held = InstanceLock::acquire(&path).expect("first");
-        drop(held);
-        let again = InstanceLock::acquire(&path).expect("second after drop");
-        drop(again);
+        for round in 0..32 {
+            let held = InstanceLock::acquire(&path)
+                .unwrap_or_else(|e| panic!("acquire round {round} after prior drop: {e}"));
+            drop(held);
+        }
+        let _ = std::fs::remove_file(&path);
     }
 }
