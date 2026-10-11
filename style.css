@@ -6,6 +6,8 @@
   --card: #ffffff;
   --border: #d8dee6;
   --accent: #0b57d0;
+  --server: #0b57d0;
+  --client: #0f766e;
   --code-bg: #0f172a;
   --code-fg: #e2e8f0;
 }
@@ -18,6 +20,8 @@
     --card: #171d25;
     --border: #2a3441;
     --accent: #7ab0ff;
+    --server: #7ab0ff;
+    --client: #5eead4;
     --code-bg: #0b1220;
     --code-fg: #dbe7ff;
   }
@@ -33,7 +37,7 @@ body {
 }
 
 .wrap {
-  max-width: 720px;
+  max-width: 1080px;
   margin: 0 auto;
   padding: 2.5rem 1.25rem 3rem;
 }
@@ -45,7 +49,7 @@ header h1 {
 }
 
 .tagline {
-  margin: 0 0 2rem;
+  margin: 0 0 1.5rem;
   color: var(--muted);
 }
 
@@ -57,9 +61,21 @@ section {
   margin-bottom: 1.1rem;
 }
 
+.intro {
+  margin-bottom: 1.25rem;
+}
+
 h2 {
   margin: 0 0 .75rem;
   font-size: 1.15rem;
+}
+
+h3 {
+  margin: 1.15rem 0 .55rem;
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
 }
 
 p { margin: .65rem 0; }
@@ -86,6 +102,53 @@ p code, li code {
   border-radius: 5px;
 }
 
+/* two-column layout: server | client */
+.columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.1rem;
+  align-items: start;
+  margin-bottom: 1.1rem;
+}
+
+.columns .col {
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+.col-title {
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  padding-bottom: .65rem;
+  border-bottom: 2px solid var(--border);
+}
+
+.col-title.server {
+  border-bottom-color: var(--server);
+  color: var(--server);
+}
+
+.col-title.client {
+  border-bottom-color: var(--client);
+  color: var(--client);
+}
+
+.col-title::before {
+  content: "";
+  width: .65rem;
+  height: .65rem;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+@media (max-width: 820px) {
+  .columns {
+    grid-template-columns: 1fr;
+  }
+}
+
 ul.packages {
   list-style: none;
   padding: 0;
@@ -95,7 +158,7 @@ ul.packages {
 ul.packages li {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem 0.75rem;
+  gap: 0.35rem 0.75rem;
   align-items: baseline;
   padding: 0.55rem 0.7rem;
   border: 1px solid var(--border);
@@ -105,12 +168,15 @@ ul.packages li {
 
 ul.packages .name {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.92rem;
+  font-size: 0.88rem;
+  word-break: break-all;
 }
 
 ul.packages .meta {
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: 0.82rem;
+  margin-left: auto;
+  white-space: nowrap;
 }
 
 .muted { color: var(--muted); }

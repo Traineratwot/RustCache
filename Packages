@@ -166,3 +166,87 @@ Description: Caching HTTP/HTTPS proxy with MITM and disk cache
  System install runs as user `rustcache` with data in /var/lib/rustcache
  and config in /etc/rustcache/config.toml.
 
+Package: rustcache
+Version: 0.2.1
+Architecture: amd64
+Maintainer: Traineratwot <Traineratwot@users.noreply.github.com>
+Installed-Size: 15212
+Depends: libc6, libgcc-s1
+Filename: pool/rustcache_0.2.1_amd64.deb
+Size: 4625696
+MD5sum: 2bea4faf0480961a269ed27089d2a34a
+SHA1: 5787763c0f76e15adb38f96d69cea69c4aa4db76
+SHA256: 7dee32588b43ca485973cd5997ebf5d696d8529d7dcb6e3594bc1311f1165ca5
+Section: net
+Priority: optional
+Homepage: https://github.com/Traineratwot/RustCache
+Description: Caching HTTP/HTTPS proxy with MITM and disk cache
+ RustCache is a caching HTTP/HTTPS proxy with TLS MITM (local root CA),
+ on-disk + in-memory cache, SOCKS5 tunnel and a local REST API/web UI.
+ .
+ System install runs as user `rustcache` with data in /var/lib/rustcache
+ and config in /etc/rustcache/config.toml.
+
+Package: rustcache
+Version: 0.2.1
+Architecture: arm64
+Maintainer: Traineratwot <Traineratwot@users.noreply.github.com>
+Installed-Size: 14756
+Depends: libc6, libgcc-s1
+Filename: pool/rustcache_0.2.1_arm64.deb
+Size: 4528644
+MD5sum: 924d2a7f6aa7f89cdc888711af5d394f
+SHA1: a6af0eb8ff637c198263f3b3bbb7e7a7c5648b35
+SHA256: 6c9270b671af6c24466540b58a8b5b0e5afb376bcbfe036ea0b450102e8187e3
+Section: net
+Priority: optional
+Homepage: https://github.com/Traineratwot/RustCache
+Description: Caching HTTP/HTTPS proxy with MITM and disk cache
+ RustCache is a caching HTTP/HTTPS proxy with TLS MITM (local root CA),
+ on-disk + in-memory cache, SOCKS5 tunnel and a local REST API/web UI.
+ .
+ System install runs as user `rustcache` with data in /var/lib/rustcache
+ and config in /etc/rustcache/config.toml.
+
+Package: rustcache-client
+Version: 0.2.1
+Architecture: arm64
+Maintainer: Traineratwot <Traineratwot@users.noreply.github.com>
+Installed-Size: 15100
+Depends: libc6, libgcc-s1
+Filename: pool/rustcache-client_0.2.1_arm64.deb
+Size: 4807490
+MD5sum: da7534cf35e17ed546bc1a62a32aa22a
+SHA1: 0f8b6c9b4aea00577bd581327c31365ea092f088
+SHA256: c17cd2162ad86ddc614e1fd4bb471bbcca477c9ceba633931d649ae274eb49b7
+Section: net
+Priority: optional
+Homepage: https://github.com/Traineratwot/RustCache
+Description: Desktop client for the RustCache caching proxy
+ Cross-platform desktop client for RustCache: root CA install, system proxy
+ on/off, resilient local proxy (direct fail-open) and a status GUI.
+ .
+ Run `rustcache-client gui` for the status window, or
+ `rustcache-client run --mode system` for proxy + system capture.
+
+Package: rustcache-client
+Version: 0.2.1
+Architecture: amd64
+Maintainer: Traineratwot <Traineratwot@users.noreply.github.com>
+Installed-Size: 15540
+Depends: libc6, libgcc-s1
+Filename: pool/rustcache-client_0.2.1_amd64.deb
+Size: 4944820
+MD5sum: 8f7bfd7c5b97afed57af85303afd0e8b
+SHA1: 37982a09d2b3d33c52347362aab33030e842fa81
+SHA256: 3518347e2d3de4ffb7a2811873995b9c92948cc31c8550c97688c2804167a45c
+Section: net
+Priority: optional
+Homepage: https://github.com/Traineratwot/RustCache
+Description: Desktop client for the RustCache caching proxy
+ Cross-platform desktop client for RustCache: root CA install, system proxy
+ on/off, resilient local proxy (direct fail-open) and a status GUI.
+ .
+ Run `rustcache-client gui` for the status window, or
+ `rustcache-client run --mode system` for proxy + system capture.
+
