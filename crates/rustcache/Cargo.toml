@@ -31,6 +31,7 @@ rust-embed = { version = "8", optional = true }
 rustcache-core = { path = "../rustcache-core" }
 rustcache-util.workspace = true
 rustls.workspace = true
+rustls-native-certs.workspace = true
 rustls-pemfile.workspace = true
 serde.workspace = true
 serde_json.workspace = true

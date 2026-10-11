@@ -77,6 +77,7 @@ pub fn default_iface() -> Option<String> {
 }
 
 /// True for tun2proxy virtual-DNS fake answers (default pool `198.18.0.0/15`).
+/// Only poisoned while [`capture_tun_present`] — see [`select_system_addrs`].
 pub fn is_capture_fake_ip(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => {
@@ -88,9 +89,34 @@ pub fn is_capture_fake_ip(ip: std::net::IpAddr) -> bool {
     }
 }
 
-/// Resolve `host:port` without returning TUN fake-IPs. System resolver first
-/// (hosts/nsswitch); on failure or fake-only answers, query real resolvers
-/// from a LAN-bound socket so the query itself skips the TUN.
+/// True when OUR capture TUN interface is up. Fake-IP answers are only
+/// poisoned while this is true; on a Clash/Mihomo network `198.18/15` is a
+/// legitimate routable endpoint range.
+pub fn capture_tun_present() -> bool {
+    std::path::Path::new("/sys/class/net/rustcache-tun0").exists()
+}
+
+/// Decide what from the system lookup we may hand to a connect.
+/// Returns `(usable, need_real_dns_fallback)`.
+fn select_system_addrs(system: Vec<SocketAddr>, tun_present: bool) -> (Vec<SocketAddr>, bool) {
+    if !tun_present {
+        let empty = system.is_empty();
+        return (system, empty);
+    }
+    let real: Vec<SocketAddr> = system
+        .iter()
+        .copied()
+        .filter(|sa| !is_capture_fake_ip(sa.ip()))
+        .collect();
+    let need = real.is_empty();
+    (real, need)
+}
+
+/// Resolve `host:port`. While the capture TUN is up, never returns poisoned
+/// fake-IPs — system first (hosts/nsswitch); on fake-only answers, query real
+/// resolvers from a LAN-bound socket so the query itself skips the TUN.
+/// Without a local TUN, system answers (including Clash `198.18/15`) are used
+/// as-is.
 pub async fn resolve_host(host: &str, port: u16) -> std::io::Result<Vec<std::net::SocketAddr>> {
     use std::net::{IpAddr, SocketAddr};
 
@@ -102,13 +128,16 @@ pub async fn resolve_host(host: &str, port: u16) -> std::io::Result<Vec<std::net
         .await
         .map(|it| it.collect())
         .unwrap_or_default();
-    let real: Vec<SocketAddr> = system
-        .iter()
-        .copied()
-        .filter(|sa| !is_capture_fake_ip(sa.ip()))
-        .collect();
-    if !real.is_empty() {
-        return Ok(real);
+    let tun_present = capture_tun_present();
+    let (usable, need_real_dns) = select_system_addrs(system.clone(), tun_present);
+    if !usable.is_empty() {
+        return Ok(usable);
+    }
+    if !need_real_dns {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("resolve {host}: no addresses"),
+        ));
     }
 
     match query_real_dns(host, port).await {
@@ -169,7 +198,11 @@ async fn query_real_dns(host: &str, port: u16) -> std::io::Result<Vec<std::net::
                 .await
                 {
                     Ok(Ok(n)) => {
-                        let ips = parse_dns_a(&buf[..n], id);
+                        let mut ips = parse_dns_a(&buf[..n], id);
+                        // Strip poisoned fake-IPs only while OUR TUN is up.
+                        if capture_tun_present() {
+                            ips.retain(|ip| !is_capture_fake_ip(*ip));
+                        }
                         if !ips.is_empty() {
                             return Ok(ips
                                 .into_iter()
@@ -330,5 +363,24 @@ mod tests {
         // Just ensure it doesn't panic; the host may or may not have a default.
         let _ = default_gateway();
         let _ = default_iface();
+    }
+
+    #[test]
+    fn system_fake_ip_is_usable_when_no_capture_tun() {
+        // Clash/Mihomo DNS hands out 198.18.0.29 — must NOT be discarded.
+        let system = vec!["198.18.0.29:443".parse().unwrap()];
+        let (usable, need_real_dns) = select_system_addrs(system.clone(), false);
+        assert_eq!(usable, system);
+        assert!(!need_real_dns);
+    }
+
+    #[test]
+    fn system_fake_ip_is_dropped_when_capture_tun_present() {
+        // OUR tun2proxy virtual DNS poisons answers — must be stripped and
+        // real DNS must be tried (loop protection).
+        let system = vec!["198.18.0.29:443".parse().unwrap()];
+        let (usable, need_real_dns) = select_system_addrs(system, true);
+        assert!(usable.is_empty());
+        assert!(need_real_dns);
     }
 }

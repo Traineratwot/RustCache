@@ -16,3 +16,5 @@ config.toml
 rustcache.log
 rustcache.pid
 rustcache-client.log
+rustcache-client.pid
+client.remote.toml

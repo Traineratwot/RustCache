@@ -498,3 +498,32 @@ async fn head_bypass_chunked_origin_reports_entity_length() {
     let _ = (h,);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Regression: 502 used to ship `Content-Length: 0` while `body` held the
+/// error text (`error_outcome` set `resp_bytes: 0`). Clients lost the reason.
+#[tokio::test]
+async fn origin_failure_502_body_carries_error_message() {
+    install_crypto();
+    let (engine, dir) = spawn_engine(ExclusionSet::default()).await;
+    let proxy = spawn_http_proxy(engine.clone()).await;
+
+    // Bind-and-drop: a port nothing listens on.
+    let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dead_port = dead.local_addr().unwrap().port();
+    drop(dead);
+
+    let url = format!("http://127.0.0.1:{dead_port}/gone");
+    let (status, headers, body) = proxy_get_full(proxy, &url).await.unwrap();
+    assert_eq!(status, 502, "dead origin must yield 502");
+    let cl = header(&headers, "Content-Length")
+        .and_then(|v| v.parse::<usize>().ok())
+        .expect("502 must carry Content-Length");
+    assert_eq!(cl, body.len(), "Content-Length must match the error body");
+    assert!(
+        !body.is_empty(),
+        "502 body must explain the failure, got empty"
+    );
+    assert_eq!(header(&headers, "X-RustCache-Status"), Some("ERROR"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}

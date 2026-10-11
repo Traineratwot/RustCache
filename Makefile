@@ -7,7 +7,8 @@ LOG         ?= rustcache.log
 CLIENT_LOG  ?= rustcache-client.log
 CLIENT_MODE ?= off
 
-.PHONY: build build-client build-all start stop start-client stop-client dev up test clean-pids
+.PHONY: build build-client build-all start stop start-client stop-client dev up test clean-pids \
+	remote-deploy remote-up remote-up-d remote-down remote-status remote-logs
 
 # Полная сборка сервера: UI (bun) → web/dist, затем релизный бинарник с embed-ui
 build:
@@ -96,6 +97,30 @@ up: build-all
 		$(CLIENT_BIN) gui --mode $(CLIENT_MODE) & client_pid=$$!; \
 		wait -n "$$server_pid" "$$client_pid" 2>/dev/null || true; \
 		cleanup'
+
+# --- remote test host (build local → scp → server on REMOTE, client here) ---
+# make remote-up     — deploy + local client foreground (Ctrl+C = client only)
+# make remote-up-d   — same, client in background (docker-compose up -d style)
+# make remote-down   — stop local client + remote server
+REMOTE      ?= 192.168.11.115
+
+remote-deploy:
+	REMOTE=$(REMOTE) bash scripts/remote-up.sh deploy
+
+remote-up:
+	REMOTE=$(REMOTE) CLIENT_MODE=$(CLIENT_MODE) bash scripts/remote-up.sh up
+
+remote-up-d:
+	REMOTE=$(REMOTE) CLIENT_MODE=$(CLIENT_MODE) bash scripts/remote-up.sh up-d
+
+remote-down:
+	REMOTE=$(REMOTE) bash scripts/remote-up.sh down
+
+remote-status:
+	REMOTE=$(REMOTE) bash scripts/remote-up.sh status
+
+remote-logs:
+	REMOTE=$(REMOTE) bash scripts/remote-up.sh logs
 
 # Все тесты workspace
 test:

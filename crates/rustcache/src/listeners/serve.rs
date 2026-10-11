@@ -239,13 +239,16 @@ fn spawn_background_revalidate(
 
 /// Origin / pipeline failure → 502 with `X-RustCache-Status: ERROR`.
 fn error_outcome(engine: &SharedEngine, msg: &str) -> CacheOutcome {
+    tracing::warn!(error = %msg, "origin/pipeline error — sending 502");
     engine.metrics().add_error();
     CacheOutcome {
         status: 502,
         headers: cache_headers(&[], "ERROR", None),
+        // `resp_bytes` drives Content-Length in `write_http_response` — must
+        // match the body or the error text is lost on the wire (CL: 0).
+        resp_bytes: msg.len() as u64,
         body: Arc::from(msg.as_bytes()),
         outcome: Outcome::Error,
-        resp_bytes: 0,
     }
 }
 

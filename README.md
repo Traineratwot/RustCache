@@ -76,7 +76,7 @@ Honest feature matrix against common alternatives. `Yes` / `Partial` / `No`.
 - `Vary` is parsed but is **not** part of the cache key
 - Only `GET` populates the cache; requests with `Authorization` bypass the cache entirely
 - No cache hierarchy / ICP / HTCP clustering and no ICAP content adaptation
-- Upstream TLS trusts `webpki-roots` only (no system roots or custom CA bundle)
+- Upstream TLS trusts system roots (`rustls-native-certs`) + `webpki-roots`. National CAs (e.g. Russian Trusted CA) work when present in the host's system store.
 - Younger than Squid (~30 years of production hardening) and nginx — expect rough edges
 
 **When to pick Squid instead:** you need proxy authentication, a real ACL language, transparent interception, cache peering/hierarchy, ICAP, or a reverse-proxy accelerator in one battle-tested daemon. **When to pick RustCache:** a single binary for a workstation or small LAN that caches HTTP *and* HTTPS (via local MITM), with a Web UI, request log, PAC, and config hot-reload out of the box.

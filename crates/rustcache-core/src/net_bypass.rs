@@ -7,10 +7,14 @@
 //!
 //! 1. **Source bind + policy routing** — bind the source address to the LAN IP
 //!    so `ip rule from <lan_ip>/32 table <n>` steers packets around the TUN.
-//! 2. **Real DNS** — TUN virtual DNS answers with fake IPs (`198.18.0.0/15`).
-//!    Those addresses are not routable on the real internet, so origin connect
-//!    fails (or loops) even with (1). [`resolve_host`] detects fake answers and
-//!    re-queries real resolvers directly.
+//! 2. **Real DNS** — while *our* capture TUN is up, its virtual DNS answers with
+//!    fake IPs (`198.18.0.0/15`). Those are not routable on the real internet,
+//!    so origin connect fails (or loops) even with (1). [`resolve_host`]
+//!    detects them and re-queries real resolvers directly.
+//!
+//! `198.18.0.0/15` is only poisoned while `rustcache-tun0` is up. On an external
+//! Clash/Mihomo fake-IP network the same range is a legitimate routable endpoint
+//! set and must be used as-is.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::sync::OnceLock;
@@ -25,8 +29,8 @@ pub use rustcache_util::split_host_port;
 static LAN_IP: OnceLock<Option<Ipv4Addr>> = OnceLock::new();
 static REAL_DNS: OnceLock<Vec<IpAddr>> = OnceLock::new();
 
-/// tun2proxy virtual-DNS pool (default `198.18.0.0/15`). Addresses in this
-/// range are fake-IP answers and must never be used to reach an origin.
+/// tun2proxy virtual-DNS pool (default `198.18.0.0/15`). Poisoned only while
+/// our capture TUN is up — see [`select_system_addrs`].
 const FAKE_IP_NET: u32 = 0xC612_0000; // 198.18.0.0
 const FAKE_IP_MASK: u32 = 0xFFFE_0000; // /15
 
@@ -74,7 +78,33 @@ fn parse_default_gateway(text: &str) -> Option<Ipv4Addr> {
     None
 }
 
-/// True when `ip` is a TUN virtual-DNS fake answer (not a real Internet address).
+/// True when OUR capture TUN interface is up. Fake-IP answers are only
+/// poisoned while this is true; on a Clash/Mihomo network `198.18/15` is a
+/// legitimate routable endpoint range.
+pub fn capture_tun_present() -> bool {
+    std::path::Path::new("/sys/class/net/rustcache-tun0").exists()
+}
+
+/// Decide what from the system lookup we may hand to a connect.
+/// Returns `(usable, need_real_dns_fallback)`.
+fn select_system_addrs(system: Vec<SocketAddr>, tun_present: bool) -> (Vec<SocketAddr>, bool) {
+    if !tun_present {
+        // Network DNS may legitimately answer with Clash/Mihomo fake-IPs
+        // (198.18/15). Those are routable here — keep them.
+        let empty = system.is_empty();
+        return (system, empty);
+    }
+    let real: Vec<SocketAddr> = system
+        .iter()
+        .copied()
+        .filter(|sa| !is_capture_fake_ip(sa.ip()))
+        .collect();
+    let need = real.is_empty();
+    (real, need)
+}
+
+/// True when `ip` is a TUN virtual-DNS fake answer. Only meaningful while
+/// [`capture_tun_present`] — see [`select_system_addrs`].
 pub fn is_capture_fake_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => (u32::from(v4) & FAKE_IP_MASK) == FAKE_IP_NET,
@@ -189,11 +219,13 @@ pub fn log_route_decision(dest: IpAddr, src: Option<IpAddr>) {
     tracing::info!(%dest, ?src, route = %text.trim(), "route decision");
 }
 
-/// Resolve `host:port` without ever handing back TUN fake-IPs.
+/// Resolve `host:port` without ever handing back *poisoned* TUN fake-IPs.
 ///
-/// Tries the system resolver first (covers `/etc/hosts`, nsswitch, mDNS). If
-/// that fails or only returns `198.18.0.0/15` answers, queries real DNS
-/// servers from a LAN-bound socket so the packets themselves skip the TUN.
+/// Tries the system resolver first (covers `/etc/hosts`, nsswitch, mDNS).
+/// While our capture TUN is up, `198.18.0.0/15` answers are dropped and real
+/// resolvers are queried from a LAN-bound socket so the packets skip the TUN.
+/// Without a local TUN those same answers are a network fake-IP DNS and are
+/// used as-is.
 pub async fn resolve_host(host: &str, port: u16) -> anyhow::Result<Vec<SocketAddr>> {
     log_bypass_context("resolve_host");
     if let Ok(ip) = host.parse::<IpAddr>() {
@@ -205,27 +237,29 @@ pub async fn resolve_host(host: &str, port: u16) -> anyhow::Result<Vec<SocketAdd
         .await
         .map(|it| it.collect())
         .unwrap_or_default();
-    let real: Vec<SocketAddr> = system
-        .iter()
-        .copied()
-        .filter(|sa| !is_capture_fake_ip(sa.ip()))
-        .collect();
-    let fake_n = system.len() - real.len();
+    let tun_present = capture_tun_present();
+    let (usable, need_real_dns) = select_system_addrs(system.clone(), tun_present);
+    let fake_n = system.len() - usable.len();
     // Loud only while a capture TUN is up — that is when this path matters.
-    if std::path::Path::new("/sys/class/net/rustcache-tun0").exists() || fake_n > 0 {
+    if tun_present || fake_n > 0 {
         tracing::info!(
             %host,
             port,
+            tun_present,
             system = ?system.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
-            real_n = real.len(),
+            real_n = usable.len(),
             fake_n,
             "resolve_host: system lookup"
         );
     } else {
         tracing::debug!(%host, port, n = system.len(), "resolve_host: system lookup");
     }
-    if !real.is_empty() {
-        return Ok(real);
+    if !usable.is_empty() {
+        return Ok(usable);
+    }
+    if !need_real_dns {
+        // No TUN and system returned nothing — nothing to fall back from.
+        return Err(anyhow!("resolve {host}: no addresses"));
     }
 
     match resolve_via_real_dns(host, port).await {
@@ -247,8 +281,8 @@ pub async fn resolve_host(host: &str, port: u16) -> anyhow::Result<Vec<SocketAdd
             if system.is_empty() {
                 Err(e)
             } else {
-                // System gave only fake IPs and real DNS failed — still refuse
-                // to return them (connecting to 198.18.x.x cannot work).
+                // Capture TUN is up and system gave only poisoned fake-IPs —
+                // still refuse to return them (they would loop via the TUN).
                 Err(anyhow!(
                     "resolve {host}: only TUN fake-IPs and real DNS failed: {e:#}"
                 ))
@@ -468,17 +502,20 @@ async fn query_dns_a(server: IpAddr, name: &str) -> anyhow::Result<Vec<IpAddr>> 
         }
     }
     // TUN virtual DNS can still answer if the query leaked into the TUN —
-    // never hand those fake-IPs to a connect.
-    let before = ips.len();
-    ips.retain(|ip| !is_capture_fake_ip(*ip));
-    if before != ips.len() {
-        tracing::warn!(
-            %name,
-            %server,
-            dropped = before - ips.len(),
-            "query_dns_a: UDP got TUN fake-IPs — retrying DNS/TCP"
-        );
-        return query_dns_tcp(server, name).await;
+    // never hand those fake-IPs to a connect while our TUN is up. Without a
+    // local TUN they are a network fake-IP DNS and must be kept.
+    if capture_tun_present() {
+        let before = ips.len();
+        ips.retain(|ip| !is_capture_fake_ip(*ip));
+        if before != ips.len() {
+            tracing::warn!(
+                %name,
+                %server,
+                dropped = before - ips.len(),
+                "query_dns_a: UDP got TUN fake-IPs — retrying DNS/TCP"
+            );
+            return query_dns_tcp(server, name).await;
+        }
     }
     if ips.is_empty() && saw_fake == 0 {
         // Empty UDP answer (or timeout path already returned Err). Try TCP too.
@@ -547,7 +584,9 @@ async fn query_dns_tcp(server: IpAddr, name: &str) -> anyhow::Result<Vec<IpAddr>
             break;
         }
     }
-    ips.retain(|ip| !is_capture_fake_ip(*ip));
+    if capture_tun_present() {
+        ips.retain(|ip| !is_capture_fake_ip(*ip));
+    }
     tracing::info!(%name, %server, ?ips, "query_dns_tcp: answers");
     Ok(ips)
 }
@@ -702,6 +741,44 @@ enp7s0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0
         assert!(!is_capture_fake_ip("93.184.216.34".parse().unwrap()));
         assert!(!is_capture_fake_ip("127.0.0.1".parse().unwrap()));
         assert!(!is_capture_fake_ip("::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn system_fake_ip_is_usable_when_no_capture_tun() {
+        // Clash/Mihomo DNS hands out 198.18.0.29 — must NOT be discarded
+        // (remote server with network fake-IP DNS used to 502 every request).
+        let system = vec!["198.18.0.29:443".parse().unwrap()];
+        let (usable, need_real_dns) = select_system_addrs(system.clone(), false);
+        assert_eq!(usable, system);
+        assert!(!need_real_dns);
+    }
+
+    #[test]
+    fn system_fake_ip_is_dropped_when_capture_tun_present() {
+        // OUR tun2proxy virtual DNS poisons answers — must be stripped and
+        // real DNS must be tried (this is the loop protection).
+        let system = vec!["198.18.0.29:443".parse().unwrap()];
+        let (usable, need_real_dns) = select_system_addrs(system, true);
+        assert!(usable.is_empty());
+        assert!(need_real_dns);
+    }
+
+    #[test]
+    fn real_system_answers_preferred_even_with_capture_tun() {
+        let system = vec![
+            "8.47.69.5:80".parse().unwrap(),
+            "198.18.0.29:80".parse().unwrap(),
+        ];
+        let (usable, need_real_dns) = select_system_addrs(system, true);
+        assert_eq!(usable, vec!["8.47.69.5:80".parse().unwrap()]);
+        assert!(!need_real_dns);
+    }
+
+    #[test]
+    fn real_dns_fallback_only_when_system_empty_or_only_poisoned() {
+        assert!(select_system_addrs(vec![], false).1); // empty → fallback
+        assert!(!select_system_addrs(vec!["1.2.3.4:80".parse().unwrap()], false).1);
+        assert!(select_system_addrs(vec!["198.18.0.29:80".parse().unwrap()], true).1);
     }
 
     #[test]
