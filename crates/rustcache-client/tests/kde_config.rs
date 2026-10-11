@@ -1,6 +1,9 @@
 //! Dry-run / format tests for the KDE `kioslaverc` handler.
+//!
+//! `sysproxy::linux` exists only on Linux — this whole file is Linux-only.
+#![cfg(target_os = "linux")]
 
-use rustcache_client::sysproxy::handler::{SysProxyHandler, envelope, handler_id};
+use rustcache_client::sysproxy::handler::{envelope, handler_id, SysProxyHandler};
 use rustcache_client::sysproxy::linux::kde::KdeHandler;
 
 #[test]

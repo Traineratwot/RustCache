@@ -1,7 +1,7 @@
 //! GNOME system proxy via `gsettings`.
 
 use anyhow::Result;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::ca::run_cmd;
 use crate::sysproxy::handler::SysProxyHandler;

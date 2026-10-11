@@ -84,28 +84,35 @@ fn open_locked(path: &Path) -> anyhow::Result<File> {
 mod tests {
     use super::*;
 
+    /// Unique per test invocation — parallel tests / re-runs must not share a path.
     fn tmp_lock(name: &str) -> std::path::PathBuf {
+        let unique = format!(
+            "{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        );
         std::env::temp_dir()
             .join("rustcache-client-lock-test")
-            .join(name)
+            .join(unique)
     }
 
     #[test]
     fn second_acquire_fails_while_first_holds() {
-        let path = tmp_lock("exclusive.lock");
-        let _first = InstanceLock::acquire(&path).expect("first acquire");
+        let path = tmp_lock("exclusive");
+        let first = InstanceLock::acquire(&path).expect("first acquire");
         assert!(
             InstanceLock::acquire(&path).is_err(),
             "second instance must be rejected"
         );
+        drop(first);
     }
 
     #[test]
     fn acquire_succeeds_after_release() {
-        let path = tmp_lock("release.lock");
-        {
-            let _held = InstanceLock::acquire(&path).expect("first");
-        }
-        let _again = InstanceLock::acquire(&path).expect("second after drop");
+        let path = tmp_lock("release");
+        let held = InstanceLock::acquire(&path).expect("first");
+        drop(held);
+        let again = InstanceLock::acquire(&path).expect("second after drop");
+        drop(again);
     }
 }
