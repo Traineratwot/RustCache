@@ -4533,7 +4533,7 @@ dependencies = [
 
 [[package]]
 name = "rustcache"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -4569,7 +4569,7 @@ dependencies = [
 
 [[package]]
 name = "rustcache-client"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4595,7 +4595,7 @@ dependencies = [
 
 [[package]]
 name = "rustcache-core"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -4624,7 +4624,7 @@ dependencies = [
 
 [[package]]
 name = "rustcache-util"
-version = "0.1.4"
+version = "0.2.0"
 
 [[package]]
 name = "rusticata-macros"
