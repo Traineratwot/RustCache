@@ -497,10 +497,13 @@ fn merge_revalidated_headers(
 
 /// Build a TLS connector for upstream HTTPS.
 ///
-/// Trusts the **system** root store plus `webpki-roots`. System roots cover
-/// national CAs (e.g. Russian Trusted CA used by Sber/T-Bank/Alfa/VTB) that
-/// Mozilla's bundle does not ship; webpki-roots stays as a floor when the
-/// platform store is empty or incomplete (minimal containers).
+/// Trusts the **system** root store, `webpki-roots`, and the national CAs
+/// embedded in `upstream_roots` (Russian Trusted CA used by Sber/T-Bank/
+/// Alfa/VTB). System roots cover whatever the host already trusts;
+/// webpki-roots stays as a floor when the platform store is empty or
+/// incomplete (minimal containers); bundled roots close the national-CA gap
+/// that Mozilla's bundle never ships. Each bundled root is skipped when an
+/// equivalent anchor is already present.
 ///
 /// Built once and reused — constructing `rustls::ClientConfig` per request
 /// is expensive and unnecessary (roots do not change at runtime).
@@ -520,9 +523,13 @@ pub fn upstream_tls_connector() -> Arc<tokio_rustls::TlsConnector> {
             for err in &native.errors {
                 tracing::warn!(error = %err, "native root cert skipped");
             }
+            let bundled = crate::upstream_roots::install_bundled_roots(&mut root_store);
             tracing::info!(
                 webpki = webpki_roots::TLS_SERVER_ROOTS.len(),
                 native = native_n,
+                bundled_added = bundled.added.len(),
+                bundled_present = bundled.present.len(),
+                bundled_failed = bundled.failed.len(),
                 "upstream TLS roots loaded"
             );
             let cfg = rustls::ClientConfig::builder()

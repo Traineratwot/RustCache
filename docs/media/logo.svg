@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="RustCache">
+  <defs>
+    <linearGradient id="rc-bg" x1="18" y1="6" x2="112" y2="122" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3730A3"/>
+      <stop offset="0.42" stop-color="#6D28D9"/>
+      <stop offset="1" stop-color="#A855F7"/>
+    </linearGradient>
+    <linearGradient id="rc-bolt" x1="52" y1="22" x2="80" y2="108" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#EDE9FE"/>
+    </linearGradient>
+    <linearGradient id="rc-layer" x1="28" y1="0" x2="100" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.38"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.12"/>
+    </linearGradient>
+  </defs>
+
+  <!-- app-icon badge -->
+  <rect width="128" height="128" rx="30" fill="url(#rc-bg)"/>
+  <!-- soft rim -->
+  <rect x="3" y="3" width="122" height="122" rx="27.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.14" stroke-width="2"/>
+
+  <!-- cache layers (disk / stack) -->
+  <rect x="26" y="78" width="76" height="13" rx="6.5" fill="url(#rc-layer)"/>
+  <rect x="26" y="64" width="76" height="13" rx="6.5" fill="url(#rc-layer)"/>
+  <rect x="26" y="50" width="76" height="13" rx="6.5" fill="url(#rc-layer)"/>
+  <rect x="26" y="36" width="76" height="13" rx="6.5" fill="url(#rc-layer)"/>
+
+  <!-- lightning bolt (speed / hit) -->
+  <path fill="url(#rc-bolt)" d="
+    M76.5 18.5
+    C76.5 18.5 44.2 62.2 42.1 65.8
+    C40.6 68.4 42.3 70.8 45.4 70.8
+    H62.2
+    L54.8 108.6
+    C54.1 111.9 57.8 114.1 60.1 111.4
+    L92.6 66.2
+    C94.6 63.4 92.7 59.8 89.2 59.8
+    H71.4
+    L82.4 22.6
+    C83.3 19.4 79.8 17.1 76.5 18.5
+    Z"/>
+</svg>

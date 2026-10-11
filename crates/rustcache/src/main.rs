@@ -147,6 +147,10 @@ async fn run(config_path: PathBuf, data_dir: Option<PathBuf>) -> anyhow::Result<
     let leaves = Arc::new(LeafIssuer::from_ca(&ca)?);
     let ca = Arc::new(ca);
 
+    // Populate the upstream TLS root store now so a trust/install problem
+    // surfaces at boot instead of on the first HTTPS request.
+    let _ = rustcache::engine::upstream_tls_connector();
+
     let live = LiveConfig::new(cfg.clone());
     let (cfg_tx, mut cfg_rx) = tokio::sync::watch::channel::<Option<Config>>(None);
     let _watcher = if config_path.exists() {

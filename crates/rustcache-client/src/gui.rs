@@ -78,10 +78,14 @@ pub struct GuiLaunch {
 impl GuiLaunch {
     /// Block on the native event loop (must be called from the main thread).
     pub fn run(self) -> Result<()> {
+        let mut viewport = egui::ViewportBuilder::default()
+            .with_inner_size([460.0, 580.0])
+            .with_title("RustCache Client");
+        if let Some(icon) = window_icon() {
+            viewport = viewport.with_icon(icon);
+        }
         let options = eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default()
-                .with_inner_size([460.0, 580.0])
-                .with_title("RustCache Client"),
+            viewport,
             ..Default::default()
         };
         let app = ClientApp {
@@ -456,7 +460,28 @@ impl ClientApp {
     }
 }
 
-/// Build a simple solid-color RGBA tray icon.
+/// Embedded app icon (window + tray source).
+const APP_ICON_PNG: &[u8] = include_bytes!("../assets/icon-256.png");
+const TRAY_ICON_PNG: &[u8] = include_bytes!("../assets/icon-32.png");
+
+/// Decode a PNG into raw RGBA + dimensions.
+fn decode_rgba(png: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
+    let img = image::load_from_memory(png).ok()?.into_rgba8();
+    let (width, height) = (img.width(), img.height());
+    Some((img.into_raw(), width, height))
+}
+
+/// Window icon for the status UI (feature `gui`).
+fn window_icon() -> Option<egui::IconData> {
+    let (rgba, width, height) = decode_rgba(APP_ICON_PNG)?;
+    Some(egui::IconData {
+        rgba,
+        width,
+        height,
+    })
+}
+
+/// Build a simple solid-color RGBA tray icon (fallback).
 pub fn tray_icon_rgba(color: [u8; 3]) -> Vec<u8> {
     const S: usize = 32;
     let mut px = vec![0u8; S * S * 4];
@@ -494,7 +519,10 @@ pub fn build_tray(on_toggle: impl Fn() + Send + Sync + 'static) -> Result<Tray> 
     menu.append(&toggle)?;
     menu.append(&quit)?;
 
-    let icon = Icon::from_rgba(tray_icon_rgba([40, 160, 80]), 32, 32)?;
+    let icon = match decode_rgba(TRAY_ICON_PNG) {
+        Some((rgba, width, height)) => Icon::from_rgba(rgba, width, height)?,
+        None => Icon::from_rgba(tray_icon_rgba([40, 160, 80]), 32, 32)?,
+    };
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("RustCache Client")

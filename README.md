@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/media/logo.svg" alt="RustCache logo" width="128" height="128">
+</p>
+
 # RustCache
 
 Caching HTTP/HTTPS proxy (MITM + disk/mem cache) with a SOCKS5 tunnel and a local REST API + Web UI.
@@ -76,7 +80,7 @@ Honest feature matrix against common alternatives. `Yes` / `Partial` / `No`.
 - `Vary` is parsed but is **not** part of the cache key
 - Only `GET` populates the cache; requests with `Authorization` bypass the cache entirely
 - No cache hierarchy / ICP / HTCP clustering and no ICAP content adaptation
-- Upstream TLS trusts system roots (`rustls-native-certs`) + `webpki-roots`. National CAs (e.g. Russian Trusted CA) work when present in the host's system store.
+- Upstream TLS trusts system roots (`rustls-native-certs`) + `webpki-roots` + national CAs embedded in the binary (Russian Trusted CA). A host-installed copy of the same root is preferred over the embedded one.
 - Younger than Squid (~30 years of production hardening) and nginx — expect rough edges
 
 **When to pick Squid instead:** you need proxy authentication, a real ACL language, transparent interception, cache peering/hierarchy, ICAP, or a reverse-proxy accelerator in one battle-tested daemon. **When to pick RustCache:** a single binary for a workstation or small LAN that caches HTTP *and* HTTPS (via local MITM), with a Web UI, request log, PAC, and config hot-reload out of the box.

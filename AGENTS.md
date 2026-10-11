@@ -7,7 +7,7 @@ Plans: `docs/plans/`. Delivery reports: `docs/compose/spec/`.
 
 - **Rust** workspace (edition 2024, MSRV 1.87): tokio + hyper/hyper-util + axum (API) + rustls/tokio-rustls + rcgen (CA/leaf) + moka (mem) + rusqlite (request log) + blake3 (cache keys) + notify (config watch)
 - **Web UI** (`web/`): React 19 + TypeScript + Vite + react-router-dom + PrimeReact/PrimeFlex/primeicons + Biome (`lint`/`fmt`)
-- TLS upstream trust: system roots (`rustls-native-certs`) + `webpki-roots`
+- TLS upstream trust: system roots (`rustls-native-certs`) + `webpki-roots` + embedded national CAs (`upstream_roots`, Russian Trusted CA)
 
 ## Layout
 
@@ -104,7 +104,7 @@ For UI work also: `npm --prefix web run lint && npm --prefix web run build`.
 
 - `.gitignore` must keep `/cache/` and `/ca/` with the leading slash. Bare `cache/` silently ignored `crates/rustcache-core/src/cache/` sources.
 - Do not hold `parking_lot::Mutex` across `.await` — futures become non-`Send`. Use `tokio::sync::Mutex` for async sections (disk write lock already does).
-- Upstream TLS trusts system roots + `webpki-roots`. A private origin with a self-signed/untrusted chain still fails MITM fetch (502). Russian bank CAs work only when the host has Russian Trusted CA in the system store (not in webpki-roots).
+- Upstream TLS trusts system roots + `webpki-roots` + the national CAs embedded in `crates/rustcache/assets/ca/` (Russian Trusted Root/Sub CA). A bundled root is skipped when the host store already has an equivalent anchor. A private origin with a self-signed/untrusted chain still fails MITM fetch (502).
 - Rebuild `target/debug/rustcache` before retesting — a stale binary masks fixes.
 - Config hot-reload applies exclusions, cache limits (`max_bytes` / `max_object_bytes`) and log retention; ports, binds and paths need a restart. `PUT /api/config` writes the whole `config.toml`, hot-applies, and returns `restart_fields` — it does **not** restart. `POST /api/config/restart` re-execs the process (same argv); `?dry_run=1` is for tests. On self-restart the child waits for `RUSTCACHE_RESTARTED_FROM` to exit before binding.
 - `PUT /api/config` validates before write: ranges/bind format, **internal port conflicts** (http/https/socks5/api/pac must be unique), port availability (changed ports only — current ports are ours until restart), and path type + create/write permissions. Returns `errors: [{field, message}]` so the Settings form can highlight fields.

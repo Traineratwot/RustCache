@@ -6,6 +6,7 @@ pub mod engine;
 pub mod instance_lock;
 pub mod listeners;
 pub mod startup;
+pub mod upstream_roots;
 
 #[cfg(feature = "embed-ui")]
 pub mod ui_embed;
