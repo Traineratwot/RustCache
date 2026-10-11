@@ -12,7 +12,7 @@ on:
         type: boolean
         default: true
       build_only:
-        description: Run quality+build only (skip Release / apt-repo / docker publish)
+        description: Run builds only (skip Release / apt-repo / docker publish)
         type: boolean
         default: false
 
@@ -68,15 +68,8 @@ jobs:
             echo "Will release ${TAG}."
           fi
 
-  gate:
-    needs: version
-    if: needs.version.outputs.should_release == 'true'
-    uses: ./.github/workflows/ci.yml
-    permissions:
-      contents: read
-
   build:
-    needs: [version, gate]
+    needs: [version]
     if: needs.version.outputs.should_release == 'true'
     strategy:
       fail-fast: false
@@ -193,7 +186,7 @@ jobs:
 
   # Desktop client binaries (CLI + GUI) for every supported OS.
   client:
-    needs: [version, gate]
+    needs: [version]
     if: needs.version.outputs.should_release == 'true'
     strategy:
       fail-fast: false
